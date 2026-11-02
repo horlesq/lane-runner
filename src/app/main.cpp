@@ -1,21 +1,21 @@
-#include <iostream>
 #include <algorithm>
+#include <iostream>
+#include "core/Config.hpp"
 #include "platform/SdlContext.hpp"
 #include "platform/Window.hpp"
-#include "core/Config.hpp"
 #include "render/Layout.hpp"
 #include "render/Renderer2D.hpp"
-#include "world/Vehicle.hpp"
+#include "world/Collision.hpp"
 #include "world/Traffic.hpp"
+#include "world/Vehicle.hpp"
 
 // ASSET_DIR is injected by CMake; wrap the macro in a typed constant once and use that.
 constexpr const char* kAssetDir = ASSET_DIR;
 
 int main(int /*argc*/, char* /*argv*/[]) {
+    // --- Platform setup (destroyed in reverse order when main returns) ---
     SdlContext sdl;
-    if (sdl.ok()) {
-        std::cout << "SDL initialized successfully." << '\n';
-    } else {
+    if (!sdl.ok()) {
         std::cerr << "SDL error: " << SDL_GetError() << '\n';
         return 1;
     }
@@ -44,82 +44,91 @@ int main(int /*argc*/, char* /*argv*/[]) {
         return 1;
     }
 
-    // --- Placeholder demo state: replaced by the game logic classes ---
-    float scroll = 0.0f;
-    HudView hud;
-    hud.assists[0].lamp = AssistLamp::Active;
-    hud.assists[0].level = 0.7f;
-    hud.assists[1].lamp = AssistLamp::Off;
-    Uint32 lastTicks = SDL_GetTicks();
-
-
     // --- Game state ---
     Vehicle ego(1, 20.0f);
     Traffic traffic;
 
+    HudView hud;
+    hud.assists[0].lamp = AssistLamp::Active;   // placeholder until the ADAS functions exist
+    hud.assists[0].level = 0.7f;
+    hud.assists[1].lamp = AssistLamp::Off;
+
+    // Logic runs in fixed 20 ms cycles; the accumulator carries leftover frame time.
     float accumulator = 0.0f;
+    Uint32 lastTicks = SDL_GetTicks();
 
     bool running = true;
     while (running) {
+        // --- Input events (one-shot actions) ---
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_QUIT) {
                 running = false;
-            } else if (event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_ESCAPE) {
-                running = false;
-            } else if (event.type == SDL_KEYDOWN && event.key.repeat == 0 && event.key.keysym.sym == SDLK_LEFT) {
-                ego.changeLane(-1);
-            } else if (event.type == SDL_KEYDOWN && event.key.repeat == 0 && event.key.keysym.sym == SDLK_RIGHT) {
-                ego.changeLane(1);
+            } else if (event.type == SDL_KEYDOWN && event.key.repeat == 0) {
+                switch (event.key.keysym.sym) {
+                    case SDLK_ESCAPE: running = false;     break;
+                    case SDLK_LEFT:   ego.changeLane(-1);  break;
+                    case SDLK_RIGHT:  ego.changeLane(+1);  break;
+                    default:                               break;
+                }
             }
         }
 
+        // --- Timing ---
         const Uint32 now = SDL_GetTicks();
-        const float dt = static_cast<float>(now - lastTicks) / 1000.0f;
+        const float frameTime = static_cast<float>(now - lastTicks) / 1000.0f;
+        lastTicks = now;
 
-        accumulator += dt;
-        accumulator = std::min(accumulator, 0.25f);
+        // Cap the backlog so a long stall (e.g. dragging the window) can't trigger hundreds of steps.
+        accumulator = std::min(accumulator + frameTime, 0.25f);
 
-        // Update the traffic cars at a fixed time step, independent of the frame rate.
+        // --- Logic: zero or more fixed cycles per frame ---
         while (accumulator >= cfg::kCycleTime) {
+            // Held keys act every cycle, so they are read as state rather than events.
             const Uint8* keys = SDL_GetKeyboardState(nullptr);
             if (keys[SDL_SCANCODE_UP]) {
                 ego.setAcceleration(4.0f);
             } else if (keys[SDL_SCANCODE_DOWN]) {
                 ego.setAcceleration(-8.0f);
             } else {
-                ego.setAcceleration(-0.5f);
+                ego.setAcceleration(-0.5f);   // rolling resistance
             }
 
             ego.step(cfg::kCycleTime);
             traffic.step(cfg::kCycleTime, ego);
+
+            for (const Vehicle& car : traffic.cars()) {
+                if (collides(ego, car)) {
+                    std::cout << "Crash! Restarting run.\n";
+                    ego = Vehicle(1, 20.0f);
+                    traffic = Traffic();
+                    break;   // traffic was just replaced; stop iterating the old cars
+                }
+            }
+
             accumulator -= cfg::kCycleTime;
         }
 
-        lastTicks = now;
-        scroll = ego.position() * layout::kPixelsPerMeter;
+        // --- HUD ---
+        const float scroll = ego.position() * layout::kPixelsPerMeter;
         hud.score = static_cast<int>(scroll / 10.0f);
-        hud.speedKmh = static_cast<int>(ego.speed() * 3.6f); // m/s to km/h
+        hud.speedKmh = static_cast<int>(ego.speed() * 3.6f);   // m/s -> km/h
 
-        // --- Render ---
+        // --- Render: back to front ---
         gfx.drawRoad(scroll);
 
-        // Draw the traffic cars
         for (const Vehicle& car : traffic.cars()) {
-            const float carX = (car.lateral() + 0.5f) * cfg::kLaneWidth;
-            const float carY = cfg::kEgoScreenY - (car.position() - ego.position()) * layout::kPixelsPerMeter;
-            gfx.drawCar(carX, carY, CarSkin::Red);
+            // Traffic is drawn relative to the ego: 1 m ahead = kPixelsPerMeter px higher on screen.
+            const float x = (car.lateral() + 0.5f) * cfg::kLaneWidth;
+            const float y = layout::kEgoScreenY - (car.position() - ego.position()) * layout::kPixelsPerMeter;
+            gfx.drawCar(x, y, CarSkin::Red);
         }
 
-        // Draw the ego car
         const float egoX = (ego.lateral() + 0.5f) * cfg::kLaneWidth;
-        gfx.drawCar(egoX, cfg::kEgoScreenY, CarSkin::Blue);   // ego
+        gfx.drawCar(egoX, layout::kEgoScreenY, CarSkin::Blue);
 
-        // Draw the HUD panel
         gfx.drawPanel(hud);
-
         SDL_RenderPresent(renderer.get());
-
     }
 
     return 0;

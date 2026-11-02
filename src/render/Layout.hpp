@@ -16,6 +16,7 @@ namespace layout {
     constexpr int kWindowHeight = cfg::kScreenHeight * 3 / 2;
 
     constexpr float kPixelsPerMeter = 20.0f; // 1 meter in the game world is 20 pixels on the screen
+    constexpr float kEgoScreenY = 380.0f;    // ego is drawn at a fixed height; the world scrolls past it
 
     static_assert(kPanelWidth >= 160, "Side panel too narrow for the HUD text");
 
