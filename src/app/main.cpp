@@ -47,8 +47,11 @@ int main(int /*argc*/, char* /*argv*/[]) {
     // --- Game state ---
     Vehicle ego(1, 20.0f);
     Traffic traffic;
-
     HudView hud;
+
+    constexpr std::array<CarSkin, 4> kNpcSkins{CarSkin::Red, CarSkin::Green, CarSkin::Yellow, CarSkin::Black};
+
+
     hud.assists[0].lamp = AssistLamp::Active;   // placeholder until the ADAS functions exist
     hud.assists[0].level = 0.7f;
     hud.assists[1].lamp = AssistLamp::Off;
@@ -121,7 +124,10 @@ int main(int /*argc*/, char* /*argv*/[]) {
             // Traffic is drawn relative to the ego: 1 m ahead = kPixelsPerMeter px higher on screen.
             const float x = (car.lateral() + 0.5f) * cfg::kLaneWidth;
             const float y = layout::kEgoScreenY - (car.position() - ego.position()) * layout::kPixelsPerMeter;
-            gfx.drawCar(x, y, CarSkin::Red);
+            
+            // Draw the car with a skin based on its variant
+            const auto variant = static_cast<std::size_t>(car.variant());
+            gfx.drawCar(x, y, kNpcSkins[variant % kNpcSkins.size()], variant / kNpcSkins.size());
         }
 
         const float egoX = (ego.lateral() + 0.5f) * cfg::kLaneWidth;

@@ -46,13 +46,20 @@ bool Renderer2D::loadAssets(const std::string& assetDir) {
     SDL_SetRenderDrawBlendMode(r_, SDL_BLENDMODE_BLEND);   // lets text shadows be translucent
 
     const std::string png = assetDir + "racing-pack/PNG/";
-    const std::array<const char*, kCarSkinCount> carFiles{
-        "car_blue_1.png", "car_red_1.png", "car_green_1.png", "car_yellow_1.png", "car_black_1.png"};
+    const std::array<const char*, kCarSkinCount> colours{"blue", "red", "green", "yellow", "black"};
+    constexpr float kLongestSpriteHeight = 131.0f;   // pixels, sports/sedan/pickup models
 
-    for (std::size_t i = 0; i < kCarSkinCount; ++i) {
-        cars_[i] = loadTexture(r_, png + "Cars/" + carFiles[i]);
-        if (!cars_[i]) {
-            return false;
+    for (std::size_t skin = 0; skin < kCarSkinCount; ++skin) {
+        for (std::size_t model = 0; model < kCarModelCount; ++model) {
+            const std::string file = png + "Cars/car_" + colours[skin] + "_" + std::to_string(model + 1) + ".png";
+            CarSprite& sprite = cars_[skin][model];
+            sprite.texture = loadTexture(r_, file);
+            if (!sprite.texture) {
+                return false;
+            }
+            int h = 0;
+            SDL_QueryTexture(sprite.texture.get(), nullptr, nullptr, nullptr, &h);
+            sprite.lengthScale = static_cast<float>(h) / kLongestSpriteHeight;
         }
     }
     tree_ = loadTexture(r_, png + "Objects/tree_small.png");
@@ -130,10 +137,11 @@ void Renderer2D::drawScenery(float scrollPx) {
     }
 }
 
-void Renderer2D::drawCar(float centerX, float centerY, CarSkin skin) {
-    SDL_Texture* tex = cars_[static_cast<std::size_t>(skin)].get();
-    drawSprite(tex, static_cast<float>(layout::kRoadX) + centerX, centerY,
-               static_cast<float>(layout::kCarWidth), static_cast<float>(layout::kCarHeight), true);
+void Renderer2D::drawCar(float centerX, float centerY, CarSkin skin, std::size_t model) {
+    const CarSprite& sprite = cars_[static_cast<std::size_t>(skin)][model % kCarModelCount];
+    const float height = static_cast<float>(layout::kCarHeight) * sprite.lengthScale;
+    drawSprite(sprite.texture.get(), static_cast<float>(layout::kRoadX) + centerX, centerY,
+               static_cast<float>(layout::kCarWidth), height, true);
 }
 
 void Renderer2D::drawPanel(const HudView& hud) {

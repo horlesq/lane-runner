@@ -9,6 +9,9 @@
 enum class CarSkin : std::uint8_t { Blue, Red, Green, Yellow, Black };
 constexpr std::size_t kCarSkinCount = 5;
 
+// Body styles from the sprite pack: 0 sports, 1 coupe, 2 sedan, 3 pickup, 4 compact.
+constexpr std::size_t kCarModelCount = 5;
+
 // Draws the game. Owns its textures; borrows the SDL renderer.
 // Coordinates: x is measured from the road's left edge, y is screen pixels from the top.
 class Renderer2D {
@@ -23,7 +26,8 @@ public:
 
     // scrollPx grows as the ego car drives forward; road markings and scenery move down with it.
     void drawRoad(float scrollPx);
-    void drawCar(float centerX, float centerY, CarSkin skin);
+    // model must be < kCarModelCount. Shorter models keep their real proportions.
+    void drawCar(float centerX, float centerY, CarSkin skin, std::size_t model = 0);
     void drawPanel(const HudView& hud);
 
 private:
@@ -32,7 +36,11 @@ private:
     void fillRect(int x, int y, int w, int h, SDL_Color color);
 
     SDL_Renderer* r_;   // not owned: main() owns the renderer and outlives this object
-    std::array<TexturePtr, kCarSkinCount> cars_;
+    struct CarSprite {
+        TexturePtr texture;
+        float lengthScale = 1.0f;   // sprite height relative to the longest model
+    };
+    std::array<std::array<CarSprite, kCarModelCount>, kCarSkinCount> cars_;   // [skin][model]
     TexturePtr tree_;
     TexturePtr treeLarge_;
     TexturePtr rock_;

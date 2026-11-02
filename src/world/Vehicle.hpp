@@ -5,7 +5,7 @@
 class Vehicle {
     public:
         Vehicle(int lane, float speed, float position = 0.0f)
-            : lane_(lane), lateral_(static_cast<float>(lane)), position_(position), speed_(speed), accel_(0.0f) {}
+            : lane_(lane), lateral_(static_cast<float>(lane)), position_(position), speed_(speed), accel_(0.0f), variant_(0) {}
 
         Vehicle() : Vehicle(0, 0.0f) {}
 
@@ -33,13 +33,16 @@ class Vehicle {
             position_ += speed_ * dt;
         }
 
-        void reset(int lane, float speed, float position) {
+        void reset(int lane, float speed, float position, int variant) {
             lane_ = lane;
             lateral_ = static_cast<float>(lane);
             position_ = position;
             speed_ = speed;
             accel_ = 0.0f;
+            variant_ = variant;
         }
+
+        int variant() const { return variant_; }
 
     private:
         int lane_; // 0..3
@@ -47,4 +50,6 @@ class Vehicle {
         float position_; // meters travelled
         float speed_; // meters per second
         float accel_; // meters per second squared
+
+        int variant_;
 };
