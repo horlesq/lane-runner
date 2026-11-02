@@ -1,4 +1,5 @@
 #include <iostream>
+#include <algorithm>
 #include "platform/SdlContext.hpp"
 #include "platform/Window.hpp"
 #include "core/Config.hpp"
@@ -63,6 +64,10 @@ int main(int /*argc*/, char* /*argv*/[]) {
                 running = false;
             } else if (event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_ESCAPE) {
                 running = false;
+            } else if (event.type == SDL_KEYDOWN && event.key.repeat == 0 && event.key.keysym.sym == SDLK_LEFT) {
+                ego.changeLane(-1);
+            } else if (event.type == SDL_KEYDOWN && event.key.repeat == 0 && event.key.keysym.sym == SDLK_RIGHT) {
+                ego.changeLane(1);
             }
         }
 
@@ -90,7 +95,7 @@ int main(int /*argc*/, char* /*argv*/[]) {
         hud.score = static_cast<int>(scroll / 10.0f);
         hud.speedKmh = static_cast<int>(ego.speed() * 3.6f); // m/s to km/h
 
-        const auto laneCenter = [ego](int lane) {
+        const auto laneCenter = [](int lane) {
             return static_cast<float>(lane * cfg::kLaneWidth + cfg::kLaneWidth / 2);
         };
 
@@ -98,7 +103,10 @@ int main(int /*argc*/, char* /*argv*/[]) {
         gfx.drawCar(laneCenter(0), 120.0f, CarSkin::Red);
         gfx.drawCar(laneCenter(2), 260.0f, CarSkin::Yellow);
         gfx.drawCar(laneCenter(3), 40.0f, CarSkin::Green);
-        gfx.drawCar(laneCenter(ego.lane()), 380.0f, CarSkin::Blue);   // ego
+
+        
+        const float egoX = (ego.lateral() + 0.5f) * cfg::kLaneWidth;
+        gfx.drawCar(egoX, 380.0f, CarSkin::Blue);   // ego
         gfx.drawPanel(hud);
 
         SDL_RenderPresent(renderer.get());
