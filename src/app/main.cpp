@@ -3,6 +3,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
+#include <string>
+#include <SDL_image.h>
 #include "audio/Audio.hpp"
 #include "core/Config.hpp"
 #include "platform/SdlContext.hpp"
@@ -49,6 +51,12 @@ int main(int /*argc*/, char* /*argv*/[]) {
     if (!window) {
         std::cerr << "SDL error: " << SDL_GetError() << '\n';
         return 1;
+    }
+
+    // Title-bar icon; the game still runs if the file is missing.
+    if (SDL_Surface* icon = IMG_Load((std::string(kAssetDir) + "art/icon.png").c_str())) {
+        SDL_SetWindowIcon(window.get(), icon);
+        SDL_FreeSurface(icon);
     }
 
     RendererPtr renderer(SDL_CreateRenderer(window.get(), -1, SDL_RENDERER_PRESENTVSYNC));

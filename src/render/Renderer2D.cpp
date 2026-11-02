@@ -74,6 +74,11 @@ bool Renderer2D::loadAssets(const std::string& assetDir) {
     tree_ = loadTexture(r_, png + "Objects/tree_small.png");
     treeLarge_ = loadTexture(r_, png + "Objects/tree_large.png");
     rock_ = loadTexture(r_, png + "Objects/rock2.png");
+
+    menuBadge_ = loadTexture(r_, assetDir + "art/menu-logo.png");
+    if (menuBadge_) {
+        SDL_SetTextureScaleMode(menuBadge_.get(), SDL_ScaleModeNearest);   // blocky, like the pixel font
+    }
     return tree_ && treeLarge_ && rock_;
 }
 
@@ -250,9 +255,28 @@ void Renderer2D::drawMenu(const MenuView& menu) {
 
     char buf[32];
     std::snprintf(buf, sizeof buf, "BEST %06d", menu.best);
-    drawTextCentered(buf, kCenterX, 360, 2, color::kText);
+    drawTextCentered(buf, kCenterX, 352, 2, color::kText);
 
-    drawTextCentered("UP/DOWN: CHOOSE   ENTER: SELECT   ESC: QUIT", kCenterX, 444, 1, color::kLabel);
+    if (menuBadge_) {
+        // Pixel-art badge with its own dark outline, drawn at the menu text's 2x pixel size.
+        constexpr int kScale = 2;
+        constexpr int kTop = 386;
+        int w = 0, h = 0;
+        SDL_QueryTexture(menuBadge_.get(), nullptr, nullptr, &w, &h);
+        const int bw = w * kScale, bh = h * kScale;
+        const int x = kCenterX - bw / 2;
+
+        const SDL_Rect shadow{x + kScale, kTop + kScale, bw, bh};
+        const SDL_Rect dst{x, kTop, bw, bh};
+        SDL_SetTextureColorMod(menuBadge_.get(), 10, 12, 20);
+        SDL_SetTextureAlphaMod(menuBadge_.get(), 200);
+        SDL_RenderCopy(r_, menuBadge_.get(), nullptr, &shadow);
+        SDL_SetTextureColorMod(menuBadge_.get(), color::kText.r, color::kText.g, color::kText.b);
+        SDL_SetTextureAlphaMod(menuBadge_.get(), 255);
+        SDL_RenderCopy(r_, menuBadge_.get(), nullptr, &dst);
+    }
+
+    drawTextCentered("UP/DOWN: CHOOSE   ENTER: SELECT   ESC: QUIT", kCenterX, 448, 1, color::kLabel);
 }
 
 void Renderer2D::drawGameOver(int score, int best, bool newBest) {

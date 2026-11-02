@@ -11,6 +11,12 @@ build/
 CLAUDE.md
 CLAUDE.local.md
 
+# Third-party logo and the cover made with it: local use only
+assets/art/logo.png
+assets/art/logo.svg
+assets/art/logo-pixels.txt
+assets/art/cover-logo.png
+
 # Local notes (not part of the project)
 docs/
 DESIGN.md

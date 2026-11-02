@@ -24,3 +24,18 @@ target_include_directories(lane-runner PRIVATE src)
 
 # Where the game finds its sprites when run from the build folder.
 target_compile_definitions(lane-runner PRIVATE ASSET_DIR="${CMAKE_SOURCE_DIR}/assets/")
+
+# Windows: embed the app icon in the .exe so Explorer and the taskbar show it.
+if(WIN32)
+    enable_language(RC)
+    set(APP_ICON_RC "${CMAKE_BINARY_DIR}/app_icon.rc")
+    file(WRITE "${APP_ICON_RC}" "1 ICON \"${CMAKE_SOURCE_DIR}/assets/art/icon.ico\"\n")
+    target_sources(lane-runner PRIVATE "${APP_ICON_RC}")
+endif()
+
+# Cover art and icon generator. Not part of the normal build: run it after changing the art.
+#   cmake --build build --target artwork && ./build/artwork assets/ assets/art/
+add_executable(artwork EXCLUDE_FROM_ALL tools/artwork.cpp src/render/BitmapFont.cpp)
+target_include_directories(artwork PRIVATE src)
+target_compile_options(artwork PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_link_libraries(artwork PRIVATE SDL2::SDL2main SDL2::SDL2 SDL2_image::SDL2_image)

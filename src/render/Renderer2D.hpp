@@ -50,4 +50,5 @@ private:
     TexturePtr tree_;
     TexturePtr treeLarge_;
     TexturePtr rock_;
+    TexturePtr menuBadge_;   // optional art/menu-logo.png; the menu skips it when absent
 };
