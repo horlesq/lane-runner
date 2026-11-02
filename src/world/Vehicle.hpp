@@ -4,8 +4,10 @@
 
 class Vehicle {
     public:
-        Vehicle(int lane, float speed)
-            : lane_(lane), lateral_(static_cast<float>(lane)), position_(0.0f), speed_(speed), accel_(0.0f) {}
+        Vehicle(int lane, float speed, float position = 0.0f)
+            : lane_(lane), lateral_(static_cast<float>(lane)), position_(position), speed_(speed), accel_(0.0f) {}
+
+        Vehicle() : Vehicle(0, 0.0f) {}
 
         int lane() const { return lane_; }
         float lateral() const { return lateral_; }
@@ -29,6 +31,14 @@ class Vehicle {
             speed_ = std::max(speed_, 0.0f);
 
             position_ += speed_ * dt;
+        }
+
+        void reset(int lane, float speed, float position) {
+            lane_ = lane;
+            lateral_ = static_cast<float>(lane);
+            position_ = position;
+            speed_ = speed;
+            accel_ = 0.0f;
         }
 
     private:
