@@ -1,0 +1,18 @@
+# Build output
+build/
+*.o
+*.exe
+
+# Editor / tooling
+.vscode/
+
+# Claude Code files
+.claude/
+CLAUDE.md
+CLAUDE.local.md
+
+# Local notes (not part of the project)
+docs/
+DESIGN.md
+LEARNING.md
+NOTES.md
