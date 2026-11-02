@@ -39,3 +39,11 @@ add_executable(artwork EXCLUDE_FROM_ALL tools/artwork.cpp src/render/BitmapFont.
 target_include_directories(artwork PRIVATE src)
 target_compile_options(artwork PRIVATE -Wall -Wextra -Wpedantic -Werror)
 target_link_libraries(artwork PRIVATE SDL2::SDL2main SDL2::SDL2 SDL2_image::SDL2_image)
+
+
+# Unit tests for the logic layer: no SDL, runs on any machine.
+enable_testing()
+add_executable(unit-tests tests/test_main.cpp)
+target_include_directories(unit-tests PRIVATE src)
+target_compile_options(unit-tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
+add_test(NAME unit-tests COMMAND unit-tests)
