@@ -10,6 +10,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)          # -std=c++17, not -std=gnu++17 (portable 
 
 add_executable(lane-runner             # a "target": the program we build
     src/app/main.cpp
+    src/audio/Audio.cpp
     src/render/BitmapFont.cpp
     src/render/Renderer2D.cpp
 )

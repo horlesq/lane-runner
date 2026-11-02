@@ -25,7 +25,16 @@ namespace {
         constexpr SDL_Color kDegraded{243, 156, 18, 255};
         constexpr SDL_Color kLocked{68, 76, 96, 255};
         constexpr SDL_Color kBarBack{40, 46, 62, 255};
+
+        constexpr SDL_Color kDim{12, 14, 22, 175};
+        constexpr SDL_Color kHighlight{255, 204, 0, 36};
+        constexpr SDL_Color kCrash{236, 80, 64, 255};
     } // namespace color
+
+    // True for half of every period: used for blinking prompts.
+    bool blink(Uint32 periodMs) {
+        return (SDL_GetTicks() / (periodMs / 2)) % 2 == 0;
+    }
 
     // Positive remainder, so patterns keep moving smoothly for any scroll value.
     float wrap(float value, float period) {
@@ -206,7 +215,74 @@ void Renderer2D::drawPanel(const HudView& hud) {
     font::drawText(r_, camera, right - font::textWidth(camera, 2), 386, 2,
                    hud.cameraOk ? color::kActive : color::kDegraded);
 
-    font::drawText(r_, "ESC: QUIT", left, cfg::kScreenHeight - 18, 1, color::kLocked);
+    font::drawText(r_, "ESC: MENU", left, cfg::kScreenHeight - 18, 1, color::kLocked);
+}
+
+void Renderer2D::drawMenu(const MenuView& menu) {
+    constexpr int kCenterX = cfg::kScreenWidth / 2;
+    fillRect(0, 0, cfg::kScreenWidth, cfg::kScreenHeight, color::kDim);
+
+    font::drawTextShadow(r_, "LANE RUNNER", kCenterX - font::textWidth("LANE RUNNER", 6) / 2, 70, 6, color::kTitle);
+    drawTextCentered("ADAS HIGHWAY CHALLENGE", kCenterX, 126, 2, color::kLabel);
+
+    int y = 196;
+    for (std::size_t i = 0; i < menu.items.size(); ++i) {
+        const MenuItemView& item = menu.items[i];
+        const bool selected = (i == menu.selected);
+        const int width = font::textWidth(item.label, 3);
+
+        if (selected) {
+            fillRect(kCenterX - 150, y - 8, 300, 37, color::kHighlight);
+            font::drawText(r_, ">", kCenterX - 130, y, 3, color::kTitle);
+            font::drawText(r_, "<", kCenterX + 130 - font::textWidth("<", 3), y, 3, color::kTitle);
+        }
+
+        SDL_Color c = item.enabled ? color::kText : color::kLocked;
+        if (selected && item.enabled) {
+            c = color::kTitle;
+        }
+        font::drawTextShadow(r_, item.label, kCenterX - width / 2, y, 3, c);
+        if (!item.enabled) {
+            font::drawText(r_, "SOON", kCenterX + width / 2 + 8, y - 4, 1, color::kDegraded);
+        }
+        y += 46;
+    }
+
+    char buf[32];
+    std::snprintf(buf, sizeof buf, "BEST %06d", menu.best);
+    drawTextCentered(buf, kCenterX, 360, 2, color::kText);
+
+    drawTextCentered("UP/DOWN: CHOOSE   ENTER: SELECT   ESC: QUIT", kCenterX, 444, 1, color::kLabel);
+}
+
+void Renderer2D::drawGameOver(int score, int best, bool newBest) {
+    constexpr int kCenterX = layout::kPanelX / 2;   // centred over the road, the panel stays visible
+    fillRect(0, 0, layout::kPanelX, cfg::kScreenHeight, color::kDim);
+
+    font::drawTextShadow(r_, "CRASHED!", kCenterX - font::textWidth("CRASHED!", 5) / 2, 120, 5, color::kCrash);
+
+    char buf[32];
+    drawTextCentered("SCORE", kCenterX, 190, 1, color::kLabel);
+    std::snprintf(buf, sizeof buf, "%06d", score);
+    font::drawTextShadow(r_, buf, kCenterX - font::textWidth(buf, 4) / 2, 204, 4, color::kText);
+
+    if (newBest) {
+        if (blink(700)) {
+            drawTextCentered("NEW BEST!", kCenterX, 250, 2, color::kTitle);
+        }
+    } else {
+        std::snprintf(buf, sizeof buf, "BEST %06d", best);
+        drawTextCentered(buf, kCenterX, 250, 2, color::kLabel);
+    }
+
+    if (blink(1000)) {
+        drawTextCentered("ENTER: RETRY", kCenterX, 310, 2, color::kText);
+    }
+    drawTextCentered("ESC: MENU", kCenterX, 340, 2, color::kLabel);
+}
+
+void Renderer2D::drawTextCentered(const char* text, int centerX, int y, int scale, SDL_Color c) {
+    font::drawTextShadow(r_, text, centerX - font::textWidth(text, scale) / 2, y, scale, c);
 }
 
 void Renderer2D::drawSprite(SDL_Texture* tex, float centerX, float centerY, float w, float h, bool shadow) {

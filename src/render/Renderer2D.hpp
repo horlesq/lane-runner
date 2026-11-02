@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <string>
 #include "render/HudView.hpp"
+#include "render/MenuView.hpp"
 #include "render/Texture.hpp"
 
 enum class CarSkin : std::uint8_t { Blue, Red, Green, Yellow, Black };
@@ -30,8 +31,13 @@ public:
     void drawCar(float centerX, float centerY, CarSkin skin, std::size_t model = 0);
     void drawPanel(const HudView& hud);
 
+    // Full-screen overlays, drawn on top of the road and cars.
+    void drawMenu(const MenuView& menu);
+    void drawGameOver(int score, int best, bool newBest);
+
 private:
     void drawScenery(float scrollPx);
+    void drawTextCentered(const char* text, int centerX, int y, int scale, SDL_Color color);
     void drawSprite(SDL_Texture* tex, float centerX, float centerY, float w, float h, bool shadow);
     void fillRect(int x, int y, int w, int h, SDL_Color color);
 

@@ -3,7 +3,7 @@
 #include <string_view>
 
 // Built-in 5x7 pixel font: no font file needed, so it works the same on every target.
-// Supports A-Z (lowercase is drawn as uppercase), 0-9 and  : . ! + - / %
+// Supports A-Z (lowercase is drawn as uppercase), 0-9 and  : . ! + - / % < >
 namespace font {
 
     constexpr int kGlyphWidth = 5;
