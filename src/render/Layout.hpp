@@ -15,6 +15,8 @@ namespace layout {
     constexpr int kWindowWidth = cfg::kScreenWidth * 3 / 2;    // PC window; rendering is scaled
     constexpr int kWindowHeight = cfg::kScreenHeight * 3 / 2;
 
+    constexpr float kPixelsPerMeter = 20.0f; // 1 meter in the game world is 20 pixels on the screen
+
     static_assert(kPanelWidth >= 160, "Side panel too narrow for the HUD text");
 
 } // namespace layout

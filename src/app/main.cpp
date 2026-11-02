@@ -4,6 +4,7 @@
 #include "core/Config.hpp"
 #include "render/Layout.hpp"
 #include "render/Renderer2D.hpp"
+#include "world/Vehicle.hpp"
 
 // ASSET_DIR is injected by CMake; wrap the macro in a typed constant once and use that.
 constexpr const char* kAssetDir = ASSET_DIR;
@@ -49,6 +50,11 @@ int main(int /*argc*/, char* /*argv*/[]) {
     hud.assists[1].lamp = AssistLamp::Off;
     Uint32 lastTicks = SDL_GetTicks();
 
+
+    Vehicle ego(1, 20.0f);
+    float accumulator = 0.0f;
+
+
     bool running = true;
     while (running) {
         SDL_Event event;
@@ -62,12 +68,29 @@ int main(int /*argc*/, char* /*argv*/[]) {
 
         const Uint32 now = SDL_GetTicks();
         const float dt = static_cast<float>(now - lastTicks) / 1000.0f;
-        lastTicks = now;
-        scroll += 600.0f * dt;
-        hud.score = static_cast<int>(scroll / 10.0f);
-        hud.speedKmh = 128;
 
-        const auto laneCenter = [](int lane) {
+        accumulator += dt;
+        accumulator = std::min(accumulator, 0.25f);
+
+        while (accumulator >= cfg::kCycleTime) {
+            const Uint8* keys = SDL_GetKeyboardState(nullptr);
+            if (keys[SDL_SCANCODE_UP]) {
+                ego.setAcceleration(4.0f);
+            } else if (keys[SDL_SCANCODE_DOWN]) {
+                ego.setAcceleration(-8.0f);
+            } else {
+                ego.setAcceleration(-0.5f);
+            }
+            ego.step(cfg::kCycleTime);
+            accumulator -= cfg::kCycleTime;
+        }
+
+        lastTicks = now;
+        scroll = ego.position() * layout::kPixelsPerMeter;
+        hud.score = static_cast<int>(scroll / 10.0f);
+        hud.speedKmh = static_cast<int>(ego.speed() * 3.6f); // m/s to km/h
+
+        const auto laneCenter = [ego](int lane) {
             return static_cast<float>(lane * cfg::kLaneWidth + cfg::kLaneWidth / 2);
         };
 
@@ -75,10 +98,11 @@ int main(int /*argc*/, char* /*argv*/[]) {
         gfx.drawCar(laneCenter(0), 120.0f, CarSkin::Red);
         gfx.drawCar(laneCenter(2), 260.0f, CarSkin::Yellow);
         gfx.drawCar(laneCenter(3), 40.0f, CarSkin::Green);
-        gfx.drawCar(laneCenter(1), 380.0f, CarSkin::Blue);   // ego
+        gfx.drawCar(laneCenter(ego.lane()), 380.0f, CarSkin::Blue);   // ego
         gfx.drawPanel(hud);
 
         SDL_RenderPresent(renderer.get());
+
     }
 
     return 0;
