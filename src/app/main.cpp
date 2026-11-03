@@ -5,6 +5,7 @@
 #include <iostream>
 #include <memory>
 #include <optional>
+#include <random>
 #include <string>
 #include <SDL_image.h>
 #include "audio/Audio.hpp"
@@ -14,6 +15,7 @@
 #include "functions/Aeb.hpp"
 #include "functions/Bsw.hpp"
 #include "functions/Lka.hpp"
+#include "game/CrashReport.hpp"
 #include "game/NearMiss.hpp"
 #include "game/Progress.hpp"
 #include "platform/SdlContext.hpp"
@@ -29,6 +31,7 @@
 #include "world/Traffic.hpp"
 #include "world/Vehicle.hpp"
 #include "world/Hazards.hpp"
+#include "world/Obstacle.hpp"
 #include "world/Oil.hpp"
 #include "world/PowerUps.hpp"
 #include "world/Wind.hpp"
@@ -59,6 +62,8 @@ constexpr std::size_t kStartTraffic = 5;     // vehicles on the road at the star
 constexpr float kMetresPerExtraCar = 600.0f; // ...one more every 600 m, up to Traffic::kMaxCars
 constexpr int kMaxAebSaves = 3;
 constexpr float kShieldTime = 2.0f;         // s of invulnerability after a shield absorbs a crash
+constexpr float kRainGrip = 0.6f;           // wet road: steering responds less
+constexpr float kPickupHintRange = 70.0f;   // m: pick-ups this far ahead are announced at the top edge
 constexpr float kAccAutoResume = 0.8f;      // s after releasing the brake before ACC takes over again
 constexpr float kPickupNameTime = 2.5f;     // s the full name of a collected power-up stays in the panel
 
@@ -156,6 +161,7 @@ int main(int /*argc*/, char* /*argv*/[]) {
     int lastScore = 0;
     bool newBest = false;
     int coinsEarned = 0;
+    CrashReport lastCrash{nullptr, nullptr};
     int bonus = 0;                // near-miss points this run
 
     // Power-ups: seconds of charge left per assist; AEB works on saves instead.
@@ -207,22 +213,26 @@ int main(int /*argc*/, char* /*argv*/[]) {
         }
     };
 
+    // Every run gets its own seed, so traffic, hazards and power-ups are different each time.
+    // (Tests keep the default seeds, so their scenarios stay reproducible.)
+    std::random_device entropy;
     const auto startRun = [&]() {
+        const std::uint32_t seed = entropy();
         ego = Vehicle(1, kStartSpeed);
         ego.enableFreeSteering();
-        traffic = Traffic();
+        traffic = Traffic(seed);
         acc = Acc();
         aeb = Aeb();
         lka = Lka();
         bsw = Bsw();
         lastBswState = BswState::Off;
-        hazards = RoadHazards();
+        hazards = RoadHazards(seed + 1);
         fusionOn = false;
         penalty = 0;
         penaltyFlash = 0.0f;
         bonus = 0;
         nearMiss = NearMissTracker<Traffic::kMaxCars>();
-        powerUps = PowerUpField();
+        powerUps = PowerUpField(seed + 2);
         charge = {};
         aebSaves = progress.startingAebSaves();
         ego.setDimensions(progress.car().length, progress.car().width);
@@ -233,8 +243,8 @@ int main(int /*argc*/, char* /*argv*/[]) {
         if (progress.startsWithAcc()) {
             chargeAssist(PowerUp::Acc);
         }
-        wind = Wind();
-        oil = OilField();
+        wind = Wind(seed + 3);
+        oil = OilField(seed + 4);
         lastAebStage = AebStage::Inactive;
         screen = Screen::Playing;
         audio.play(Sfx::Start);
@@ -397,9 +407,16 @@ int main(int /*argc*/, char* /*argv*/[]) {
 
         // --- Logic: zero or more fixed cycles per frame ---
         while (accumulator >= cfg::kCycleTime) {
+            // Static obstacles (roadworks) for this cycle: traffic, sensors and collisions all use the same list.
+            if (screen == Screen::Playing) {
+                hazards.step(ego);
+            }
+            const RoadHazards::Obstacles obstacles = screen == Screen::Playing ? hazards.obstacles() : RoadHazards::Obstacles{};
+            const Span<StaticObstacle> obstacleView(obstacles.begin(), obstacles.size());
+
             if (screen == Screen::Playing) {
                 // Power-ups: collect, and drain the charge of active assists.
-                if (const std::optional<PowerUp> got = powerUps.step(ego, cfg::kCycleTime, progress.hasMagnet())) {
+                if (const std::optional<PowerUp> got = powerUps.step(ego, cfg::kCycleTime, progress.hasMagnet(), obstacleView)) {
                     chargeAssist(*got);
                     audio.play(Sfx::PowerUp);
                     pickupName = *got == PowerUp::Acc      ? "+ CRUISE CONTROL"
@@ -425,8 +442,10 @@ int main(int /*argc*/, char* /*argv*/[]) {
                 traffic.setActiveCount(kStartTraffic + static_cast<std::size_t>(ego.position() / kMetresPerExtraCar));
 
                 // Perception: every sensor refreshes its object list through the same virtual call.
-                hazards.step(ego);
                 SensorEnvironment env;
+                env.obstacles = obstacleView;
+                env.rain = hazards.inRain(ego.position());
+                env.glare = hazards.cameraGlare(ego.position());
                 env.fog = hazards.inFog(ego.position());
                 env.metalBridgeAhead = hazards.bridgeAhead(ego, kGhostMinDistance, kGhostMaxDistance);
                 for (const std::unique_ptr<Sensor>& sensor : sensors) {
@@ -516,7 +535,7 @@ int main(int /*argc*/, char* /*argv*/[]) {
                 if (surface.justHit) {
                     audio.play(Sfx::Skid);
                 }
-                ego.setGrip(surface.grip);
+                ego.setGrip(std::min(surface.grip, hazards.inRain(ego.position()) ? kRainGrip : 1.0f));
                 ego.push(wind.step(cfg::kCycleTime) + surface.slide);
             } else {
                 ego.setAcceleration(0.0f);   // menu: an invisible camera cruises through traffic
@@ -527,7 +546,7 @@ int main(int /*argc*/, char* /*argv*/[]) {
             if (screen == Screen::Playing && ego.lane() != laneBefore) {
                 audio.play(Sfx::LaneChange);   // whoosh when crossing a lane line
             }
-            traffic.step(cfg::kCycleTime, ego, screen == Screen::Playing);   // title screen: NPCs ignore the camera
+            traffic.step(cfg::kCycleTime, ego, screen == Screen::Playing, obstacleView);   // title screen: NPCs ignore the camera
             accumulator -= cfg::kCycleTime;
 
             // Cutting someone off: they honk, you lose points.
@@ -547,15 +566,15 @@ int main(int /*argc*/, char* /*argv*/[]) {
                 bonus += nearMissPoints;
                 audio.play(Sfx::NearMiss);
             }
-            // Crash: into another car (from any side), or into the road-side barrier.
-            const bool hitCar = std::any_of(traffic.cars().begin(), traffic.cars().end(),
-                                            [&](const Vehicle& car) { return collides(ego, car); });
-            if ((hitCar || ego.hitCurb()) && invulnerable <= 0.0f && shields > 0) {
+            // Crash: into a vehicle (from any side), an obstacle, or the road-side barrier.
+            const std::optional<CrashReport> crash = describeCrash(ego, traffic.cars(), obstacleView);
+            if (crash && invulnerable <= 0.0f && shields > 0) {
                 --shields;                    // the shield takes the hit
                 invulnerable = kShieldTime;
                 audio.play(Sfx::Crash);
-            } else if ((hitCar || ego.hitCurb()) && invulnerable <= 0.0f) {
+            } else if (crash && invulnerable <= 0.0f) {
                 audio.play(Sfx::Crash);
+                lastCrash = *crash;
                 lastScore = scoreOf(ego);
                 newBest = lastScore > progress.best;
                 coinsEarned = progress.finishRun(lastScore);
@@ -613,6 +632,13 @@ int main(int /*argc*/, char* /*argv*/[]) {
         bswLamp.level = 1.0f;
         hud.wind = screen == Screen::Playing ? wind.current() : 0.0f;
         hud.cameraOk = screen != Screen::Playing || sensors[kFrontCamera]->available();
+        hud.cameraText = nullptr;
+        if (screen == Screen::Playing) {
+            hud.cameraText = hazards.inFog(ego.position())         ? "BLIND"
+                             : hazards.cameraGlare(ego.position()) ? "GLARE"
+                             : hazards.inRain(ego.position())      ? "RAIN"
+                                                                    : nullptr;
+        }
 
         AssistView& fusionLamp = hud.assists[4];   // amber = camera blind, fusion runs on radar alone
         fusionLamp.lamp = !fusionOn ? AssistLamp::Off
@@ -640,20 +666,41 @@ int main(int /*argc*/, char* /*argv*/[]) {
         if (screen == Screen::Playing || screen == Screen::GameOver) {
             for (const PowerUpField::Pickup& p : powerUps.pickups()) {
                 const float y = layout::kEgoScreenY - (p.position - ego.position()) * layout::kPixelsPerMeter;
-                if (y > -40.0f && y < static_cast<float>(cfg::kScreenHeight) + 40.0f) {
+                const float ahead = p.position - ego.position();
+                const bool onScreen = y > -40.0f && y < static_cast<float>(cfg::kScreenHeight) + 40.0f;
+                if (onScreen || (ahead > 0.0f && ahead < kPickupHintRange)) {
                     struct Look { const char* label; SDL_Color colour; };
                     const Look look = p.type == PowerUp::Acc      ? Look{"ACC", SDL_Color{46, 204, 113, 255}}
                                       : p.type == PowerUp::Lka    ? Look{"LKA", SDL_Color{60, 170, 240, 255}}
                                       : p.type == PowerUp::Bsw    ? Look{"BSW", SDL_Color{243, 156, 18, 255}}
                                       : p.type == PowerUp::Fusion ? Look{"FUS", SDL_Color{170, 100, 230, 255}}
                                                                   : Look{"AEB", SDL_Color{230, 70, 60, 255}};
-                    gfx.drawPickup((p.lateral + 0.5f) * cfg::kLaneWidth, y, look.label, look.colour);
+                    if (y < -20.0f) {   // still off-screen: a small badge at the top edge above its lane
+                        gfx.drawPickupHint((p.lateral + 0.5f) * cfg::kLaneWidth, look.label, look.colour);
+                    } else {
+                        gfx.drawPickup((p.lateral + 0.5f) * cfg::kLaneWidth, y, look.label, look.colour);
+                    }
                 }
             }
         }
 
         const bool inMenus = screen == Screen::Menu || screen == Screen::Shop || screen == Screen::Garage || screen == Screen::Guide;
         if (!inMenus) {
+            const auto toScreenY = [&](float position) {
+                return layout::kEgoScreenY - (position - ego.position()) * layout::kPixelsPerMeter;
+            };
+            for (const RoadHazards::Debris& d : hazards.debris()) {
+                gfx.drawDebris((d.lateral + 0.5f) * cfg::kLaneWidth, toScreenY(d.position), static_cast<int>(d.kind));
+            }
+            for (const RoadHazards::Accident& a : hazards.accidents()) {
+                gfx.drawWreck((static_cast<float>(a.lane) + 0.5f) * cfg::kLaneWidth, toScreenY(a.position),
+                              RoadHazards::kAccidentLength);
+            }
+            for (const RoadHazards::Roadworks& r : hazards.roadworks()) {
+                gfx.drawRoadworks((static_cast<float>(r.lane) + 0.5f) * cfg::kLaneWidth,
+                                  layout::kEgoScreenY - (r.start - ego.position()) * layout::kPixelsPerMeter,
+                                  layout::kEgoScreenY - (r.end - ego.position()) * layout::kPixelsPerMeter, r.mergeDir);
+            }
             for (const OilField::Patch& p : oil.patches()) {
                 const float y = layout::kEgoScreenY - (p.position - ego.position()) * layout::kPixelsPerMeter;
                 if (y > -60.0f && y < static_cast<float>(cfg::kScreenHeight) + 60.0f) {
@@ -714,6 +761,15 @@ int main(int /*argc*/, char* /*argv*/[]) {
             }
 
             // Bridges pass over the cars; fog hides everything inside it, the player's view included.
+            const auto screenY = [&](float position) {
+                return layout::kEgoScreenY - (position - ego.position()) * layout::kPixelsPerMeter;
+            };
+            for (const RoadHazards::Zone& z : hazards.tunnels()) {
+                gfx.drawTunnel(screenY(z.end), screenY(z.start));
+            }
+            for (const RoadHazards::Zone& z : hazards.rain()) {
+                gfx.drawRain(screenY(z.end), screenY(z.start));
+            }
             for (const float b : hazards.bridges()) {
                 gfx.drawBridge(layout::kEgoScreenY - (b - ego.position()) * layout::kPixelsPerMeter);
             }
@@ -760,7 +816,7 @@ int main(int /*argc*/, char* /*argv*/[]) {
             gfx.drawPanel(hud);
         }
         if (screen == Screen::GameOver) {
-            gfx.drawGameOver(lastScore, progress.best, newBest, coinsEarned);
+            gfx.drawGameOver(lastScore, progress.best, newBest, coinsEarned, lastCrash.what, lastCrash.tip);
         }
 
         SDL_RenderPresent(renderer.get());

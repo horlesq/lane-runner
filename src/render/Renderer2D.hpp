@@ -34,6 +34,20 @@ public:
     void drawMotorcycle(float centerX, float centerY, CarSkin skin, int signal = 0, bool braking = false);
     void drawPanel(const HudView& hud);
 
+    // Lane closure: tinted lane between the two screen heights, cones on both lane lines, a barrier
+    // at the closure (startY, nearest the player) and merge arrows before it. mergeDir: -1 left, +1 right.
+    void drawRoadworks(float laneCenterX, float startY, float endY, int mergeDir);
+
+    // Debris on the road (kind 0 tyres, 1 barrel, 2 rock), road-relative x, screen y.
+    void drawDebris(float centerX, float centerY, int kind);
+    // Two wrecked cars across a lane with hazard lights, and a warning triangle before them.
+    // centerY = the first wreck (nearest the player); the second stands lengthMetres further ahead.
+    void drawWreck(float laneCenterX, float centerY, float lengthMetres);
+    // Rain between two screen heights: darker light and falling streaks.
+    void drawRain(float topY, float bottomY);
+    // Tunnel between two screen heights: dark inside, walls over the verges, ceiling lights, portals.
+    void drawTunnel(float topY, float bottomY);
+
     // Concrete overpass across the road at screen height centerY (drawn over the cars).
     void drawBridge(float centerY);
     // Fog bank between two screen heights; hides everything inside it.
@@ -41,6 +55,8 @@ public:
 
     // Power-up badge on the road: a pulsing disc with a short label (road-relative x, screen y).
     void drawPickup(float centerX, float centerY, const char* label, SDL_Color color);
+    // A pick-up still off-screen ahead: small badge with a down arrow at the top edge above its lane.
+    void drawPickupHint(float centerX, const char* label, SDL_Color color);
 
     // Oil patch on the road (drawn under the cars). centerX road-relative, centerY screen pixels.
     void drawOil(float centerX, float centerY);
@@ -72,7 +88,8 @@ public:
     void drawShop(const ShopView& shop);
     void drawGarage(const GarageView& garage);
     void drawAssistGuide();   // what each power-up does, in plain words
-    void drawGameOver(int score, int best, bool newBest, int coinsEarned);
+    // what / tip: what the player crashed into and a hint about the assist that would have helped.
+    void drawGameOver(int score, int best, bool newBest, int coinsEarned, const char* what, const char* tip);
 
 private:
     void drawScenery(float scrollPx);
@@ -91,6 +108,10 @@ private:
     TexturePtr treeLarge_;
     TexturePtr rock_;
     TexturePtr oil_;
+    TexturePtr cone_;
+    std::array<TexturePtr, 3> debris_;
+    TexturePtr barrier_;
+    TexturePtr arrow_;
     std::array<TexturePtr, kCarSkinCount> motorcycles_;
     std::array<TexturePtr, kCarSkinCount> riders_;   // racer sprites that sit on the motorcycles
 

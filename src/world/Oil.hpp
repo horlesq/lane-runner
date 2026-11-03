@@ -17,16 +17,17 @@ struct GripEffect {
 // Touching one makes the tyres slip: steering loses authority and the car slides sideways for a moment.
 class OilField {
 public:
-    static constexpr std::size_t kMaxPatches = 3;
+    static constexpr std::size_t kMaxPatches = 2;
 
     struct Patch {
         float position;   // m along the road (centre)
         float lateral;    // lanes (centre)
     };
 
-    OilField() {
+    explicit OilField(std::uint32_t seed = 99) : rng_(seed) {
+        const float first = kFirstPatch * std::uniform_real_distribution<float>(0.6f, 1.4f)(rng_);
         for (std::size_t i = 0; i < kMaxPatches; ++i) {
-            patches_[i] = Patch{kFirstPatch + kSpacing * static_cast<float>(i), randomLateral()};
+            patches_[i] = Patch{first + kSpacing * static_cast<float>(i), randomLateral()};
         }
     }
 
@@ -73,10 +74,10 @@ private:
     static constexpr float kSlipTime = 1.0f;       // s the tyres stay slippery after touching oil
     static constexpr float kSlipGrip = 0.15f;      // grip right after hitting the oil
     static constexpr float kSlideRate = 0.7f;      // lanes/s sideways slide at its strongest
-    static constexpr float kFirstPatch = 120.0f;   // m; no oil right at the start
-    static constexpr float kSpacing = 70.0f;
-    static constexpr float kAheadMin = 60.0f;      // m ahead where a recycled patch appears
-    static constexpr float kAheadMax = 160.0f;
+    static constexpr float kFirstPatch = 180.0f;   // m; no oil right at the start
+    static constexpr float kSpacing = 220.0f;
+    static constexpr float kAheadMin = 180.0f;     // m ahead where a recycled patch appears (rare: an event, not noise)
+    static constexpr float kAheadMax = 400.0f;
     static constexpr float kRecycleBehind = 15.0f;
 
     float randomLateral() {
@@ -85,7 +86,7 @@ private:
     }
 
     std::array<Patch, kMaxPatches> patches_{};
-    std::mt19937 rng_{99};
+    std::mt19937 rng_;
     bool wasOnOil_ = false;
     float slipLeft_ = 0.0f;
     float slideDir_ = 1.0f;

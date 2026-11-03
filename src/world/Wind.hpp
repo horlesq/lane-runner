@@ -1,11 +1,14 @@
 #pragma once
 #include <cmath>
+#include <cstdint>
 #include <random>
 
 // Crosswind gusts that push the car sideways: the disturbance LKA has to correct.
 // A gust swells and fades over a few seconds, then it is calm for a while.
 class Wind {
 public:
+    explicit Wind(std::uint32_t seed = 7) : rng_(seed) {}
+
     // Every 20 ms. Returns the sideways push in lanes/s (+ = to the right).
     float step(float dt) {
         if (!inGust_) {
@@ -40,7 +43,7 @@ private:
         peak_ = std::bernoulli_distribution(0.5)(rng_) ? strength : -strength;
     }
 
-    std::mt19937 rng_{7};
+    std::mt19937 rng_;
     bool inGust_ = false;
     float calmLeft_ = 5.0f;   // s of calm at the start of a run
     float gustTime_ = 0.0f;

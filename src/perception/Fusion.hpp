@@ -9,11 +9,13 @@
 // Rule per radar object:
 //  - inside the camera's view and the camera works: keep it only if the camera confirms it (ghosts drop out),
 //  - beyond the camera's range, or camera blind: keep it, with lower confidence (radar alone).
+// Camera objects the radar doesn't report (small debris with a weak radar echo) are added too.
 namespace fusion {
 
     constexpr float kMatchLongitudinal = 3.0f;   // m
     constexpr float kMatchLateral = 0.35f;       // lanes
     constexpr float kRadarOnlyConfidence = 0.6f;
+    constexpr float kCameraOnlyConfidence = 0.8f;
 
     inline bool confirms(const ObjectList& camera, const DetectedObject& r) {
         for (const DetectedObject& c : camera) {
@@ -38,6 +40,14 @@ namespace fusion {
                 o.confidence = kRadarOnlyConfidence;
             }
             fused.push_back(o);
+        }
+        if (camera.available()) {
+            for (DetectedObject c : camera.objects()) {
+                if (!confirms(radar.objects(), c)) {
+                    c.confidence = kCameraOnlyConfidence;
+                    fused.push_back(c);
+                }
+            }
         }
         return fused;
     }

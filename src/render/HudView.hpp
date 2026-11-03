@@ -31,5 +31,6 @@ struct HudView {
     }};
     bool radarOk = true;
     bool cameraOk = true;
+    const char* cameraText = nullptr;   // why the camera is limited ("BLIND", "GLARE", "RAIN"); null = OK
     float wind = 0.0f;   // lanes/s sideways push, + = to the right
 };

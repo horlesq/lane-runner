@@ -16,10 +16,13 @@
 #include "world/Collision.hpp"
 #include "world/DriverModel.hpp"
 #include "world/Lead.hpp"
+#include "world/Hazards.hpp"
+#include "world/Obstacle.hpp"
 #include "world/Oil.hpp"
 #include "world/PowerUps.hpp"
 #include "core/FixedVector.hpp"
 #include "perception/ObjectList.hpp"
+#include "game/CrashReport.hpp"
 #include "game/NearMiss.hpp"
 #include "game/Progress.hpp"
 #include "perception/Fusion.hpp"
@@ -877,6 +880,119 @@ static void testMagnetPullsPickups() {
     CHECK(!collected2);
 }
 
+// --- Roadworks (static obstacles) ---
+
+// Touching a closed stretch of lane is a crash; driving past it in the next lane is not.
+static void testObstacleHit() {
+    const StaticObstacle closure{1.0f, 0.5f, 100.0f, 200.0f};
+    CHECK(hits(closure, Vehicle(1, 20.0f, 99.0f)));     // front bumper past the barrier
+    CHECK(!hits(closure, Vehicle(1, 20.0f, 95.0f)));    // still before it
+    CHECK(!hits(closure, Vehicle(2, 20.0f, 150.0f)));   // next lane, alongside
+}
+
+// The game-over screen names what you hit: which vehicle, from which side, or which obstacle.
+static void testCrashReport() {
+    const Vehicle ego(1, 25.0f, 100.0f);
+    const auto what = [&](const Vehicle& other, Span<StaticObstacle> obstacles = {}) {
+        const std::array<Vehicle, 1> cars{other};
+        const std::optional<CrashReport> r = describeCrash(ego, cars, obstacles);
+        return r ? std::string(r->what) : std::string("NOTHING");
+    };
+    CHECK(what(Vehicle(1, 20.0f, 103.5f)) == "INTO THE CAR AHEAD");    // my front bumper in its back
+    CHECK(what(Vehicle(1, 30.0f, 96.5f)) == "REAR-ENDED BY A CAR");    // it ran into my back
+    CHECK(what(Vehicle(1, 25.0f, 100.5f)) == "SIDESWIPED A CAR");      // side by side
+    CHECK(what(Vehicle(1, 20.0f, 120.0f)) == "NOTHING");               // 20 m ahead: no crash
+
+    const std::array<StaticObstacle, 1> debris{{{1.0f, 0.2f, 101.0f, 103.0f, true, ObstacleKind::Debris}}};
+    CHECK(what(Vehicle(3, 20.0f, 100.0f), debris) == "INTO DEBRIS");
+    const std::array<StaticObstacle, 1> wreck{{{1.0f, 0.45f, 101.0f, 110.0f, false, ObstacleKind::Wreck}}};
+    CHECK(what(Vehicle(3, 20.0f, 100.0f), wreck) == "INTO A WRECK");
+}
+
+// Radar and camera both report the barrier, so ACC/AEB see a stopped "object" in the lane ahead.
+static void testSensorsSeeBarrier() {
+    const Vehicle ego(1, 25.0f, 0.0f);
+    const std::array<Vehicle, 0> noCars{};
+    const std::array<StaticObstacle, 1> closure{{{1.0f, 0.5f, 30.0f, 120.0f}}};
+    SensorEnvironment env;
+    env.obstacles = closure;
+    Radar radar("FRONT", radar_zones::kFront, true);
+    Camera camera("CAM", camera_zones::kFront);
+    radar.update(ego, noCars, env);
+    camera.update(ego, noCars, env);
+    const std::optional<Lead> lead = selectLead(fusion::fuse(radar, camera));   // confirmed by both
+    CHECK(lead.has_value());
+    if (lead) {
+        CHECK(near(lead->gap, 30.0f - cfg::kCarLength / 2.0f, 0.1f) && near(lead->relativeSpeed, -25.0f));
+    }
+}
+
+// Traffic through roadworks, debris and accidents on several random layouts: NPCs merge out in time;
+// nobody hits an obstacle or another car. The "player" here is only a camera the NPCs ignore
+// (a test robot that drove through obstacles would hide them from the cars following it).
+static void testTrafficMergesAtRoadworks() {
+    for (std::uint32_t seed : {1u, 2u, 3u}) {
+        RoadHazards hazards(seed);
+        Vehicle ego(0, 25.0f, 0.0f);
+        Traffic traffic(seed + 100);
+        int crashes = 0;
+        for (int step = 0; step < 50 * 240; ++step) {
+            hazards.step(ego);
+            const RoadHazards::Obstacles obstacles = hazards.obstacles();
+            ego.step(0.02f);
+            traffic.step(0.02f, ego, false, Span<StaticObstacle>(obstacles.begin(), obstacles.size()));
+            const auto& cars = traffic.cars();
+            for (std::size_t a = 0; a < cars.size(); ++a) {
+                for (const StaticObstacle& o : obstacles) {
+                    crashes += hits(o, cars[a]) ? 1 : 0;
+                }
+                for (std::size_t b = a + 1; b < cars.size(); ++b) {
+                    crashes += collides(cars[a], cars[b]) ? 1 : 0;
+                }
+            }
+        }
+        CHECK(crashes == 0);
+    }
+}
+
+// --- Debris, rain, tunnels ---
+
+// Debris 30 m ahead: the radar barely reflects from it and doesn't report it yet; the camera does.
+// Fusion adds camera-only objects, so with fusion the lead (and AEB) sees the debris much earlier.
+static void testDebrisNeedsFusion() {
+    const Vehicle ego(1, 25.0f, 0.0f);
+    const std::array<Vehicle, 0> noCars{};
+    const std::array<StaticObstacle, 1> debris{{{1.0f, 0.18f, 30.0f, 31.2f, true}}};
+    SensorEnvironment env;
+    env.obstacles = debris;
+    Radar radar("FRONT", radar_zones::kFront, true);
+    Camera camera("CAM", camera_zones::kFront);
+    radar.update(ego, noCars, env);
+    camera.update(ego, noCars, env);
+    CHECK(!selectLead(radar.objects()).has_value());                 // radar alone: nothing
+    CHECK(selectLead(fusion::fuse(radar, camera)).has_value());     // fused: debris ahead
+
+    const Vehicle close(1, 25.0f, 20.0f);                            // 10 m before it: radar finally sees it
+    radar.update(close, noCars, env);
+    CHECK(selectLead(radar.objects()).has_value());
+}
+
+// Rain shortens the camera's view (a car 30 m ahead disappears); glare at a tunnel portal blinds it.
+static void testCameraRainAndGlare() {
+    const Vehicle ego(1, 20.0f, 0.0f);
+    const std::array<Vehicle, 1> cars{Vehicle(1, 15.0f, 30.0f)};
+    Camera camera("CAM", camera_zones::kFront);
+    SensorEnvironment rain;
+    rain.rain = true;
+    camera.update(ego, cars, rain);
+    CHECK(camera.available() && camera.objects().empty() && camera.fieldOfView().maxLongitudinal < 30.0f);
+
+    SensorEnvironment glare;
+    glare.glare = true;
+    camera.update(ego, cars, glare);
+    CHECK(!camera.available());
+}
+
 int main() {
     testProportionalOnly();
     testOutputIsClamped();
@@ -923,6 +1039,12 @@ int main() {
     testGarage();
     testNewShopItems();
     testMagnetPullsPickups();
+    testObstacleHit();
+    testCrashReport();
+    testSensorsSeeBarrier();
+    testTrafficMergesAtRoadworks();
+    testDebrisNeedsFusion();
+    testCameraRainAndGlare();
 
     std::printf(g_failures == 0 ? "All tests passed\n" : "%d test(s) failed\n", g_failures);
     return g_failures == 0 ? 0 : 1;

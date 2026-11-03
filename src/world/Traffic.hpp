@@ -5,7 +5,9 @@
 #include <optional>
 #include <random>
 #include "core/Config.hpp"
+#include "core/Span.hpp"
 #include "world/DriverModel.hpp"
+#include "world/Obstacle.hpp"
 #include "world/Vehicle.hpp"
 
 // Everything a simulated driver remembers, kept next to its Vehicle (same index).
@@ -36,7 +38,8 @@ public:
     static constexpr int kColours = 4;        // variant = colour + kColours * model
     static constexpr int kPickupModel = 3;    // pickups are the slow vehicles
 
-    Traffic() {
+    // seed: the game passes a new one every run; tests use the default so their traffic is reproducible.
+    explicit Traffic(std::uint32_t seed = 42) : rng_(seed) {
         for (std::size_t i = 0; i < kMaxCars; ++i) {
             const int variant = static_cast<int>((i * 7) % kVariantCount);   // mix colours and models
             drivers_[i] = makeDriver(variant);
@@ -46,8 +49,10 @@ public:
     }
 
     // One 20 ms cycle. egoIsTraffic = false on the title screen, where the "ego" is just a camera.
-    void step(float dt, const Vehicle& ego, bool egoIsTraffic = true) {
+    // obstacles: static things on the road (closed lanes...) that drivers brake for and merge around.
+    void step(float dt, const Vehicle& ego, bool egoIsTraffic = true, Span<StaticObstacle> obstacles = {}) {
         const Vehicle* egoCar = egoIsTraffic ? &ego : nullptr;
+        obstacles_ = obstacles;   // only used during this call
 
         // 1. Every driver decides from the same snapshot, so the result doesn't depend on update order.
         std::array<float, kMaxCars> accel{};
@@ -103,6 +108,7 @@ public:
 private:
     static constexpr float kFollowWidth = 0.6f;    // lanes; a car this close sideways counts as "in front of me"
     static constexpr float kSignalLead = 0.8f;     // s of indicating before starting to move over
+    static constexpr float kLaneChangeTime = 0.8f; // s to slide over one lane (Vehicle: 1.25 lanes/s)
     static constexpr float kBesideMargin = 2.0f;   // m of extra room needed next to me to move over
     static constexpr float kMatchSpeedRange = 60.0f;   // m; a new car adopts the speed of a car this close ahead
     static constexpr float kSpawnBrakeCheck = 3.0f;    // m/s^2; spawn gaps must allow a calm stop, not an emergency one
@@ -114,6 +120,8 @@ private:
     static constexpr float kCutOffDecel = 3.5f;            // m/s^2; braking this hard because of the player = cut off
     static constexpr float kHonkCooldown = 4.0f;           // s
     static constexpr float kParkedBehind = 5000.0f;        // m; where inactive vehicles wait
+    static constexpr float kStuckSpeed = 5.0f;             // m/s; slower than this, a driver merges more assertively
+    static constexpr float kObstacleSpawnClearance = 20.0f; // m, plus braking distance, before a closure
 
     // Another road user found in a lane, with what is needed to predict its reaction.
     struct Other {
@@ -183,7 +191,20 @@ private:
         if (ego) {
             consider(*ego, true);
         }
+        // A static obstacle in my path is a "leader" standing still: IDM brakes for it, MOBIL merges away.
+        for (const StaticObstacle& o : obstacles_) {
+            if (o.start > me.position() && std::abs(o.lateral - me.lateral()) < o.halfWidth + me.width() / 2.0f) {
+                const float gap = o.start - me.position() - me.length() / 2.0f;
+                if (!best || gap < best->neighbour.gap) {
+                    best = Leader{driver::Neighbour{gap, 0.0f}, false};
+                }
+            }
+        }
         return best;
+    }
+
+    static bool coversLane(const StaticObstacle& o, int lane) {
+        return std::abs(o.lateral - static_cast<float>(lane)) < o.halfWidth + 0.25f;
     }
 
     // Is NPC j in `lane`, moving into it, or about to (indicating towards it)?
@@ -213,6 +234,14 @@ private:
         if (ego && std::abs(ego->lateral() - static_cast<float>(lane)) < kFollowWidth) {
             consider(*ego, egoProfile(*ego));
         }
+        if (ahead) {
+            for (const StaticObstacle& o : obstacles_) {
+                const float distance = o.start - myPos;
+                if (coversLane(o, lane) && distance > 0.0f && (!best || distance < std::abs(best->position - myPos))) {
+                    best = Other{o.start, 0.0f, 0.0f, driver::Profile{}};   // stands still; its face is at `start`
+                }
+            }
+        }
         return best;
     }
 
@@ -222,6 +251,14 @@ private:
         const std::optional<Other> leader = nearestInLane(i, lane, true, ego);
         const std::optional<Other> follower = nearestInLane(i, lane, false, ego);
 
+        for (const StaticObstacle& o : obstacles_) {   // never move into a closed stretch of lane
+            // Ahead, count the distance covered while indicating and sliding over, not just the car's length.
+            const float reachAhead = me.length() / 2.0f + kBesideMargin + me.speed() * (kSignalLead + kLaneChangeTime);
+            const float reachBehind = me.length() / 2.0f + kBesideMargin;
+            if (coversLane(o, lane) && me.position() + reachAhead > o.start && me.position() - reachBehind < o.end) {
+                return std::nullopt;
+            }
+        }
         const auto minRoom = [&](const Other& o) { return (me.length() + o.length) / 2.0f + kBesideMargin; };
         if ((leader && leader->position - me.position() < minRoom(*leader)) ||
             (follower && me.position() - follower->position < minRoom(*follower))) {
@@ -254,13 +291,19 @@ private:
         Vehicle& car = cars_[i];
         DriverState& d = drivers_[i];
         d.cooldown -= dt;
+        // Stuck (almost stopped, e.g. at a lane closure): a driver merges more assertively, like a zipper merge.
+        driver::Profile p = d.profile;
+        if (car.speed() < kStuckSpeed) {
+            p.safeDecel = std::max(p.safeDecel, 6.0f);
+            p.politeness = 0.0f;
+        }
 
         if (d.signal != 0) {
             d.signalTime += dt;
             if (!d.changingLane && d.signalTime >= kSignalLead) {
                 // Last look before moving over: the gap may have closed while indicating.
                 const std::optional<driver::LaneChangeOption> o = evaluate(i, car.lane() + d.signal, myAccelNow, ego);
-                if (o && driver::isSafe(*o, d.profile)) {
+                if (o && driver::isSafe(*o, p)) {
                     car.changeLane(d.signal);
                     d.changingLane = true;
                     ++laneChanges_;
@@ -288,10 +331,10 @@ private:
                 continue;
             }
             const std::optional<driver::LaneChangeOption> o = evaluate(i, lane, myAccelNow, ego);
-            if (!o || !driver::isSafe(*o, d.profile)) {
+            if (!o || !driver::isSafe(*o, p)) {
                 continue;
             }
-            const float gain = driver::incentive(*o, d.profile);
+            const float gain = driver::incentive(*o, p);
             if (gain > bestIncentive) {
                 bestIncentive = gain;
                 bestDir = dir;
@@ -399,6 +442,13 @@ private:
     }
 
     bool isFree(std::size_t self, int lane, float position, float speed, const Vehicle& ego) const {
+        for (const StaticObstacle& o : obstacles_) {
+            // Not inside a closed lane, and far enough before it to stop calmly from the spawn speed.
+            const float stopping = kObstacleSpawnClearance + speed * speed / (2.0f * kSpawnBrakeCheck);
+            if (coversLane(o, lane) && position > o.start - stopping && position < o.end + 5.0f) {
+                return false;
+            }
+        }
         for (std::size_t j = 0; j < kMaxCars; ++j) {
             if (j != self && occupies(j, lane) && !roomBetween(position, speed, cars_[j])) {
                 return false;
@@ -409,8 +459,9 @@ private:
 
     std::array<Vehicle, kMaxCars> cars_;
     std::array<DriverState, kMaxCars> drivers_;
-    std::mt19937 rng_{42};   // fixed seed: the same traffic every run, so behaviour is reproducible
+    std::mt19937 rng_;
     int laneChanges_ = 0;
     int cutOffs_ = 0;
     std::size_t activeCount_ = kMaxCars;
+    Span<StaticObstacle> obstacles_;
 };

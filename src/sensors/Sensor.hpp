@@ -2,6 +2,7 @@
 #include <optional>
 #include "core/Span.hpp"
 #include "perception/ObjectList.hpp"
+#include "world/Obstacle.hpp"
 #include "world/Vehicle.hpp"
 
 // Area a sensor covers, relative to the centre of the player's car.
@@ -21,7 +22,17 @@ struct DetectionZone {
 struct SensorEnvironment {
     bool fog = false;                      // camera can't see
     std::optional<float> metalBridgeAhead; // m; radar waves bounce off it and create a ghost object
+    Span<StaticObstacle> obstacles;        // static things on the road (barriers, debris)
+    bool rain = false;                     // camera sees less far
+    bool glare = false;                    // camera dazzled (tunnel entrance/exit)
 };
+
+// What a sensor reports for a static obstacle: its face, relative to the ego, standing still.
+inline DetectedObject detectStatic(const Vehicle& ego, const StaticObstacle& o) {
+    constexpr float kDepth = 1.0f;   // m: only the face matters for the gap
+    DetectedObject d{o.start + kDepth / 2.0f - ego.position(), o.lateral - ego.lateral(), -ego.speed(), kDepth, 2.0f * o.halfWidth};
+    return d;
+}
 
 // Interface for every sensor. The rest of the code only talks to Sensor, so a radar, a camera or a
 // test double can be swapped in without changing the functions that use the object list.

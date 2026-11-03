@@ -76,6 +76,18 @@ bool Renderer2D::loadAssets(const std::string& assetDir) {
     treeLarge_ = loadTexture(r_, png + "Objects/tree_large.png");
     rock_ = loadTexture(r_, png + "Objects/rock2.png");
     oil_ = loadTexture(r_, png + "Objects/oil.png");
+    cone_ = loadTexture(r_, png + "Objects/cone_straight.png");
+    debris_[0] = loadTexture(r_, png + "Objects/tires_white.png");
+    debris_[1] = loadTexture(r_, png + "Objects/barrel_red.png");
+    debris_[2] = loadTexture(r_, png + "Objects/rock1.png");
+    if (!debris_[0] || !debris_[1] || !debris_[2]) {
+        return false;
+    }
+    barrier_ = loadTexture(r_, png + "Objects/barrier_red.png");
+    arrow_ = loadTexture(r_, png + "Objects/arrow_yellow.png");
+    if (!cone_ || !barrier_ || !arrow_) {
+        return false;
+    }
     for (std::size_t skin = 0; skin < kCarSkinCount; ++skin) {
         motorcycles_[skin] = loadTexture(r_, png + "Motorcycles/motorcycle_" + colours[skin] + ".png");
         riders_[skin] = loadTexture(r_, png + "Characters/racer_" + colours[skin] + ".png");
@@ -283,13 +295,13 @@ void Renderer2D::drawPanel(const HudView& hud) {
     font::drawText(r_, "SENSORS", left, 346, 1, color::kLabel);
 
     const char* radar = hud.radarOk ? "OK" : "FAULT";
-    const char* camera = hud.cameraOk ? "OK" : "BLIND";
+    const char* camera = hud.cameraText ? hud.cameraText : (hud.cameraOk ? "OK" : "BLIND");
     font::drawText(r_, "RADAR", left, 362, 2, color::kText);
     font::drawText(r_, radar, right - font::textWidth(radar, 2), 362, 2,
                    hud.radarOk ? color::kActive : color::kDegraded);
     font::drawText(r_, "CAMERA", left, 386, 2, color::kText);
     font::drawText(r_, camera, right - font::textWidth(camera, 2), 386, 2,
-                   hud.cameraOk ? color::kActive : color::kDegraded);
+                   hud.cameraOk && !hud.cameraText ? color::kActive : color::kDegraded);
 
     // Wind: arrows point where the car is being pushed; more arrows = stronger gust.
     font::drawText(r_, "WIND", left, 410, 2, color::kText);
@@ -304,6 +316,155 @@ void Renderer2D::drawPanel(const HudView& hud) {
     }
 
     font::drawText(r_, "TAB: DEBUG  ESC: MENU", left, cfg::kScreenHeight - 18, 1, color::kLocked);
+}
+
+void Renderer2D::drawRoadworks(float laneCenterX, float startY, float endY, int mergeDir) {
+    constexpr float kArrowLead1 = 140.0f;   // px before the barrier (about 7 m)
+    constexpr float kArrowLead2 = 300.0f;
+    if (startY + kArrowLead2 + 40.0f < 0.0f || endY > static_cast<float>(cfg::kScreenHeight)) {
+        return;   // nothing of it on screen
+    }
+    const float x = static_cast<float>(layout::kRoadX) + laneCenterX;
+    const float halfLane = static_cast<float>(cfg::kLaneWidth) / 2.0f;
+
+    // Closed stretch: warm tint so the lane reads as "not for driving".
+    const int top = std::max(0, static_cast<int>(endY));
+    const int bottom = std::min(cfg::kScreenHeight, static_cast<int>(startY));
+    if (bottom > top) {
+        fillRect(static_cast<int>(x - halfLane), top, cfg::kLaneWidth, bottom - top, SDL_Color{255, 170, 40, 26});
+    }
+
+    // Merge arrows on the closed lane before the barrier, tilted towards the lane to merge into.
+    const double angle = 55.0 * static_cast<double>(mergeDir);
+    for (float lead : {kArrowLead1, kArrowLead2}) {
+        const SDL_FRect a{x - 26.0f, startY + lead - 16.0f, 52.0f, 32.0f};
+        SDL_RenderCopyExF(r_, arrow_.get(), nullptr, &a, angle, nullptr, SDL_FLIP_NONE);
+    }
+
+    // Cones on both lane lines, every ~2.5 m, from the barrier to the end.
+    for (float y = startY; y > endY; y -= 50.0f) {
+        if (y < -20.0f || y > static_cast<float>(cfg::kScreenHeight) + 20.0f) {
+            continue;
+        }
+        for (float side : {-1.0f, 1.0f}) {
+            drawSprite(cone_.get(), x + side * (halfLane - 6.0f), y, 18.0f, 18.0f, true);
+        }
+    }
+    // Barrier across the lane at the closure.
+    drawSprite(barrier_.get(), x, startY, static_cast<float>(cfg::kLaneWidth) - 8.0f, 22.0f, true);
+}
+
+void Renderer2D::drawDebris(float centerX, float centerY, int kind) {
+    const std::size_t k = static_cast<std::size_t>(kind) % debris_.size();
+    const float size = k == 2 ? 26.0f : 22.0f;   // a rock is a bit bigger than tyres or a barrel
+    drawSprite(debris_[k].get(), static_cast<float>(layout::kRoadX) + centerX, centerY, size, size * (k == 2 ? 0.8f : 1.0f), true);
+}
+
+void Renderer2D::drawWreck(float laneCenterX, float centerY, float lengthMetres) {
+    const float x = static_cast<float>(layout::kRoadX) + laneCenterX;
+    const float ahead = lengthMetres * layout::kPixelsPerMeter * 0.55f;
+    if (centerY + 360.0f < 0.0f || centerY - ahead - 60.0f > static_cast<float>(cfg::kScreenHeight)) {
+        return;
+    }
+    // Warning triangle on the road, well before the wrecks.
+    const float ty = centerY + 300.0f;
+    const SDL_Color red{226, 60, 50, 255};
+    const SDL_Vertex outer[3]{{{x, ty - 12.0f}, red, {0, 0}}, {{x - 11.0f, ty + 8.0f}, red, {0, 0}}, {{x + 11.0f, ty + 8.0f}, red, {0, 0}}};
+    SDL_RenderGeometry(r_, nullptr, outer, 3, nullptr, 0);
+    const SDL_Color white{245, 245, 245, 255};
+    const SDL_Vertex inner[3]{{{x, ty - 5.0f}, white, {0, 0}}, {{x - 5.0f, ty + 4.0f}, white, {0, 0}}, {{x + 5.0f, ty + 4.0f}, white, {0, 0}}};
+    SDL_RenderGeometry(r_, nullptr, inner, 3, nullptr, 0);
+
+    // Two cars standing skewed across the lane, shadows on, hazard lights blinking on all corners.
+    struct Wreck { CarSkin skin; std::size_t model; float dx; float dy; double angle; };
+    const Wreck wrecks[2]{{CarSkin::Black, 1, -8.0f, 0.0f, 28.0}, {CarSkin::Red, 4, 10.0f, -ahead, -38.0}};
+    const bool on = blink(600);
+    for (const Wreck& w : wrecks) {
+        const CarSprite& sprite = cars_[static_cast<std::size_t>(w.skin)][w.model];
+        const float h = static_cast<float>(layout::kCarHeight) * sprite.lengthScale;
+        const float cx = x + w.dx;
+        const float cy = centerY + w.dy;
+        const SDL_FRect shadow{cx - 25.0f + 4.0f, cy - h / 2.0f + 6.0f, 50.0f, h};
+        SDL_SetTextureColorMod(sprite.texture.get(), 0, 0, 0);
+        SDL_SetTextureAlphaMod(sprite.texture.get(), 70);
+        SDL_RenderCopyExF(r_, sprite.texture.get(), nullptr, &shadow, w.angle, nullptr, SDL_FLIP_NONE);
+        SDL_SetTextureColorMod(sprite.texture.get(), 255, 255, 255);
+        SDL_SetTextureAlphaMod(sprite.texture.get(), 255);
+        const SDL_FRect body{cx - 25.0f, cy - h / 2.0f, 50.0f, h};
+        SDL_RenderCopyExF(r_, sprite.texture.get(), nullptr, &body, w.angle, nullptr, SDL_FLIP_NONE);
+        if (on) {
+            const double a = w.angle * 3.14159265 / 180.0;
+            const float c = static_cast<float>(std::cos(a));
+            const float s = static_cast<float>(std::sin(a));
+            for (float sx : {-21.0f, 21.0f}) {
+                for (float sy : {-h / 2.0f + 8.0f, h / 2.0f - 8.0f}) {
+                    const int lx = static_cast<int>(cx + sx * c - sy * s);
+                    const int ly = static_cast<int>(cy + sx * s + sy * c);
+                    fillRect(lx - 8, ly - 7, 16, 14, SDL_Color{255, 176, 0, 110});
+                    fillRect(lx - 3, ly - 2, 6, 5, SDL_Color{255, 214, 60, 255});
+                }
+            }
+        }
+    }
+}
+
+void Renderer2D::drawRain(float topY, float bottomY) {
+    const int top = std::max(0, static_cast<int>(topY));
+    const int bottom = std::min(cfg::kScreenHeight, static_cast<int>(bottomY));
+    if (bottom <= top) {
+        return;
+    }
+    const int width = layout::kPanelX;
+    fillRect(0, top, width, bottom - top, SDL_Color{30, 44, 70, 70});   // grey, overcast light
+    // Falling streaks: each has a fixed column; rain falls at a constant speed, so time x speed is fine here.
+    const float t = static_cast<float>(SDL_GetTicks()) / 1000.0f;
+    constexpr int kDrops = 90;
+    for (int i = 0; i < kDrops; ++i) {
+        const std::uint32_t h = hash(i + 991);
+        const float x = static_cast<float>(h % static_cast<std::uint32_t>(width));
+        const float y = wrap(static_cast<float>((h >> 9) % 997u) + t * (520.0f + static_cast<float>(h % 120u)), 480.0f);
+        if (y < static_cast<float>(top) || y > static_cast<float>(bottom)) {
+            continue;
+        }
+        const auto len = static_cast<int>(10 + h % 8u);
+        for (int k = 0; k < len; k += 2) {   // slight slant
+            fillRect(static_cast<int>(x) - k / 4, static_cast<int>(y) + k, 1, 2, SDL_Color{190, 210, 240, 150});
+        }
+    }
+}
+
+void Renderer2D::drawTunnel(float topY, float bottomY) {
+    constexpr int kPortal = 28;
+    const int top = std::max(0, static_cast<int>(topY));
+    const int bottom = std::min(cfg::kScreenHeight, static_cast<int>(bottomY));
+    if (bottom + kPortal <= 0 || topY - kPortal > static_cast<float>(cfg::kScreenHeight)) {
+        return;
+    }
+    const int width = layout::kPanelX;
+    if (bottom > top) {
+        fillRect(0, top, width, bottom - top, SDL_Color{6, 8, 18, 165});                                   // darkness
+        fillRect(0, top, layout::kRoadX - 8, bottom - top, SDL_Color{92, 96, 108, 255});                    // walls
+        fillRect(layout::kRoadRight + 8, top, width - layout::kRoadRight - 8, bottom - top, SDL_Color{92, 96, 108, 255});
+        // Ceiling lights above the lane lines, moving with the road.
+        const int first = static_cast<int>(topY) + static_cast<int>(wrap(-topY, 60.0f));
+        for (int y = first; y < bottom; y += 60) {
+            if (y < top) {
+                continue;
+            }
+            for (int lane = 1; lane < cfg::kLaneCount; ++lane) {
+                const int lx = layout::kRoadX + lane * cfg::kLaneWidth;
+                fillRect(lx - 9, y - 6, 18, 12, SDL_Color{255, 210, 120, 50});
+                fillRect(lx - 4, y - 2, 8, 4, SDL_Color{255, 230, 160, 255});
+            }
+        }
+    }
+    // Concrete portals at both ends.
+    for (float py : {topY, bottomY}) {
+        const int y = static_cast<int>(py) - kPortal / 2;
+        fillRect(0, y, width, kPortal, SDL_Color{120, 124, 134, 255});
+        fillRect(0, y, width, 4, SDL_Color{160, 164, 174, 255});
+        fillRect(0, y + kPortal - 4, width, 4, SDL_Color{80, 84, 94, 255});
+    }
 }
 
 void Renderer2D::drawBridge(float centerY) {
@@ -684,11 +845,21 @@ void Renderer2D::drawMenu(const MenuView& menu) {
     drawTextCentered("UP/DOWN: CHOOSE   ENTER: SELECT   ESC: QUIT", kCenterX, 456, 1, color::kLabel);
 }
 
-void Renderer2D::drawGameOver(int score, int best, bool newBest, int coinsEarned) {
+void Renderer2D::drawGameOver(int score, int best, bool newBest, int coinsEarned, const char* what, const char* tip) {
     constexpr int kCenterX = layout::kPanelX / 2;   // centred over the road, the panel stays visible
     fillRect(0, 0, layout::kPanelX, cfg::kScreenHeight, color::kDim);
 
-    font::drawTextShadow(r_, "CRASHED!", kCenterX - font::textWidth("CRASHED!", 5) / 2, 120, 5, color::kCrash);
+    font::drawTextShadow(r_, "CRASHED!", kCenterX - font::textWidth("CRASHED!", 5) / 2, 70, 5, color::kCrash);
+    if (what) {
+        drawTextCentered(what, kCenterX, 118, 2, color::kText);
+    }
+    if (tip) {
+        // Tip in a small card so it reads as advice, not as part of the score.
+        const int w = font::textWidth(tip, 1) + 20;
+        fillRect(kCenterX - w / 2, 142, w, 20, color::kPanel);
+        fillRect(kCenterX - w / 2, 142, 2, 20, color::kTitle);
+        drawTextCentered(tip, kCenterX, 149, 1, color::kTitle);
+    }
 
     char buf[32];
     drawTextCentered("SCORE", kCenterX, 190, 1, color::kLabel);
@@ -834,6 +1005,17 @@ void Renderer2D::drawAssistGuide() {
         y += 70;
     }
     drawTextCentered("ESC: BACK", kCenterX, 456, 1, color::kLabel);
+}
+
+void Renderer2D::drawPickupHint(float centerX, const char* label, SDL_Color c) {
+    const int x = layout::kRoadX + static_cast<int>(centerX);
+    const bool on = blink(400);
+    fillRect(x - 17, 4, 34, 15, color::kPanel);
+    fillRect(x - 16, 5, 32, 13, on ? c : SDL_Color{c.r, c.g, c.b, 150});
+    font::drawText(r_, label, x - font::textWidth(label, 1) / 2, 8, 1, color::kText);
+    for (int i = 0; i < 5; ++i) {   // small arrow pointing down at the lane
+        fillRect(x - 5 + i, 20 + i, 10 - 2 * i, 1, c);
+    }
 }
 
 void Renderer2D::drawPickup(float centerX, float centerY, const char* label, SDL_Color c) {

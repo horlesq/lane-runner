@@ -16,6 +16,14 @@ public:
             // Looks like a stopped car in my lane under the bridge: the classic cause of phantom braking.
             objects_.push_back(DetectedObject{*env.metalBridgeAhead, 0.0f, -ego.speed()});
         }
+        for (const StaticObstacle& o : env.obstacles) {
+            const DetectedObject d = detectStatic(ego, o);
+            // Small, soft objects reflect little: the radar only picks them up when close.
+            const bool visible = !o.weakRadarEcho || d.longitudinal < kWeakEchoRange;
+            if (visible && zone_.contains(d.longitudinal, d.lateral)) {
+                objects_.push_back(d);
+            }
+        }
         for (const Vehicle& car : vehicles) {
             const DetectedObject o{car.position() - ego.position(), car.lateral() - ego.lateral(),
                                    car.speed() - ego.speed(), car.length(), car.width()};
@@ -29,6 +37,8 @@ public:
     const DetectionZone& fieldOfView() const override { return zone_; }
 
 private:
+    static constexpr float kWeakEchoRange = 15.0f;   // m
+
     const char* name_;
     DetectionZone zone_;
     bool seesBridgeGhosts_;
