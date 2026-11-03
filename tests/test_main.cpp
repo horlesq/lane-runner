@@ -18,6 +18,8 @@
 #include "world/Oil.hpp"
 #include "core/FixedVector.hpp"
 #include "perception/ObjectList.hpp"
+#include "perception/Fusion.hpp"
+#include "sensors/Camera.hpp"
 #include "sensors/Radar.hpp"
 #include "world/Traffic.hpp"
 #include "world/Vehicle.hpp"
@@ -499,9 +501,9 @@ static void testRadarZones() {
     Radar front("FRONT", radar_zones::kFront);
     Radar rearLeft("REAR LEFT", radar_zones::kRearLeft);
     Radar rearRight("REAR RIGHT", radar_zones::kRearRight);
-    front.update(ego, cars);
-    rearLeft.update(ego, cars);
-    rearRight.update(ego, cars);
+    front.update(ego, cars, SensorEnvironment{});
+    rearLeft.update(ego, cars, SensorEnvironment{});
+    rearRight.update(ego, cars, SensorEnvironment{});
 
     CHECK(front.objects().size() == 1);
     CHECK(near(front.objects()[0].longitudinal, 30.0f) && near(front.objects()[0].relativeSpeed, -5.0f));
@@ -515,7 +517,7 @@ static void testLeadFromRadarMatchesGroundTruth() {
     const Vehicle ego(1, 20.0f, 0.0f);
     const std::array<Vehicle, 3> cars{Vehicle(1, 12.0f, 40.0f), Vehicle(1, 18.0f, 22.0f), Vehicle(2, 5.0f, 10.0f)};
     const std::unique_ptr<Sensor> radar = std::make_unique<Radar>("FRONT", radar_zones::kFront);
-    radar->update(ego, cars);
+    radar->update(ego, cars, SensorEnvironment{});
 
     const std::optional<Lead> fromRadar = selectLead(radar->objects());
     const std::optional<Lead> truth = findLead(ego, cars);
@@ -587,8 +589,8 @@ static CutInResult cutIn(float behind, float faster, bool withBsw) {
     }
     CutInResult r;
     for (int step = 0; step < 50 * 8 && !r.crashed; ++step) {
-        rearLeft.update(ego, traffic.cars());
-        rearRight.update(ego, traffic.cars());
+        rearLeft.update(ego, traffic.cars(), SensorEnvironment{});
+        rearRight.update(ego, traffic.cars(), SensorEnvironment{});
         const std::optional<float> want = ego.lateral() < 2.0f ? std::optional<float>(2.0f) : std::nullopt;
         const std::optional<float> allowed = bsw.step(rearLeft.objects(), rearRight.objects(), want);
         r.blocked = r.blocked || (want && !allowed);
@@ -641,6 +643,73 @@ static void testMotorcycleHitbox() {
     CHECK(!collides(car, bike));
 }
 
+// --- Camera, radar ghosts, fusion ---
+
+// Fog blinds the camera: it reports nothing and says so through available().
+static void testCameraBlindInFog() {
+    const Vehicle ego(1, 20.0f, 0.0f);
+    const std::array<Vehicle, 1> cars{Vehicle(1, 15.0f, 20.0f)};
+    Camera camera("CAM", camera_zones::kFront);
+    camera.update(ego, cars, SensorEnvironment{});
+    CHECK(camera.available() && camera.objects().size() == 1);
+
+    SensorEnvironment fog;
+    fog.fog = true;
+    camera.update(ego, cars, fog);
+    CHECK(!camera.available() && camera.objects().empty());
+}
+
+// Near a metal bridge the front radar reports a ghost "stopped car" in my lane. Without fusion,
+// ACC/AEB would see a lead there; with fusion the camera doesn't confirm it, so it is dropped.
+static void testFusionRemovesBridgeGhost() {
+    const Vehicle ego(1, 25.0f, 0.0f);
+    const std::array<Vehicle, 0> noCars{};
+    SensorEnvironment bridge;
+    bridge.metalBridgeAhead = 20.0f;
+    Radar radar("FRONT", radar_zones::kFront, true);
+    Camera camera("CAM", camera_zones::kFront);
+    radar.update(ego, noCars, bridge);
+    camera.update(ego, noCars, bridge);
+
+    const std::optional<Lead> raw = selectLead(radar.objects());
+    CHECK(raw.has_value() && near(raw->relativeSpeed, -25.0f));   // phantom stopped car ahead
+    CHECK(!selectLead(fusion::fuse(radar, camera)).has_value());   // fused: gone
+}
+
+// Real cars survive fusion: confirmed ones with full confidence; beyond camera range or in fog the
+// radar alone is trusted, with lower confidence (better than seeing nothing).
+static void testFusionKeepsRealCars() {
+    const Vehicle ego(1, 25.0f, 0.0f);
+    const std::array<Vehicle, 2> cars{Vehicle(1, 20.0f, 20.0f), Vehicle(2, 20.0f, 50.0f)};   // 20 m and 50 m ahead
+    Radar radar("FRONT", radar_zones::kFront, true);
+    Camera camera("CAM", camera_zones::kFront);
+    radar.update(ego, cars, SensorEnvironment{});
+    camera.update(ego, cars, SensorEnvironment{});
+    const ObjectList clear = fusion::fuse(radar, camera);
+    CHECK(clear.size() == 2);
+    for (const DetectedObject& o : clear) {
+        CHECK(near(o.confidence, o.longitudinal < 35.0f ? 1.0f : fusion::kRadarOnlyConfidence));
+    }
+
+    SensorEnvironment fog;
+    fog.fog = true;
+    radar.update(ego, cars, fog);
+    camera.update(ego, cars, fog);
+    const ObjectList foggy = fusion::fuse(radar, camera);
+    CHECK(foggy.size() == 2);
+    CHECK(near(foggy[0].confidence, fusion::kRadarOnlyConfidence));
+}
+
+// LKA can't keep the lane without seeing the markings: degraded, no steering, resumes when visible.
+static void testLkaDegradedWithoutLanes() {
+    Lka lka;
+    lka.toggle();
+    CHECK(near(lka.step(0.02f, 1.3f, false, false), 0.0f));
+    CHECK(lka.state() == LkaState::Degraded);
+    CHECK(lka.step(0.02f, 1.3f, false, true) < 0.0f);   // lanes back: steers towards lane 1 again
+    CHECK(lka.state() == LkaState::Active);
+}
+
 int main() {
     testProportionalOnly();
     testOutputIsClamped();
@@ -675,6 +744,10 @@ int main() {
     testCutInWithoutBsw();
     testBswPreventsRearEnd();
     testMotorcycleHitbox();
+    testCameraBlindInFog();
+    testFusionRemovesBridgeGhost();
+    testFusionKeepsRealCars();
+    testLkaDegradedWithoutLanes();
 
     std::printf(g_failures == 0 ? "All tests passed\n" : "%d test(s) failed\n", g_failures);
     return g_failures == 0 ? 0 : 1;

@@ -18,12 +18,15 @@
 #include "platform/Window.hpp"
 #include "render/Layout.hpp"
 #include "render/Renderer2D.hpp"
+#include "perception/Fusion.hpp"
+#include "sensors/Camera.hpp"
 #include "sensors/Radar.hpp"
 #include "sensors/Sensor.hpp"
 #include "world/Collision.hpp"
 #include "world/Lead.hpp"
 #include "world/Traffic.hpp"
 #include "world/Vehicle.hpp"
+#include "world/Hazards.hpp"
 #include "world/Oil.hpp"
 #include "world/Wind.hpp"
 
@@ -46,6 +49,8 @@ constexpr float kMaxThrottle = 4.0f;   // m/s^2 at low speed
 constexpr int kCutOffPenalty = 250;    // points lost each time a driver has to brake hard because of you
 constexpr float kPenaltyFlashTime = 1.2f;   // s the score flashes red
 constexpr float kBrakeLightDecel = 1.5f;    // m/s^2; NPCs braking harder than this show brake lights
+constexpr float kGhostMinDistance = 8.0f;    // m; the radar sees a bridge ghost from this close...
+constexpr float kGhostMaxDistance = 50.0f;   // ...out to this far
 constexpr float kDriverSteerRate = 2.0f;   // lanes/s while ← or → is held; stronger than LKA's 1.2
 
 int main(int /*argc*/, char* /*argv*/[]) {
@@ -94,15 +99,19 @@ int main(int /*argc*/, char* /*argv*/[]) {
     constexpr std::array<CarSkin, 4> kNpcSkins{CarSkin::Red, CarSkin::Green, CarSkin::Yellow, CarSkin::Black};
 
     // --- Sensors: created once at startup, then only used through the Sensor interface ---
-    // unique_ptr<Sensor> owns a Radar; destroying it through the base pointer is why ~Sensor is virtual.
+    // unique_ptr<Sensor> owns a Radar or a Camera; destroying it through the base pointer is why ~Sensor is virtual.
     constexpr std::size_t kFrontRadar = 0;
     constexpr std::size_t kRearLeftRadar = 1;
     constexpr std::size_t kRearRightRadar = 2;
-    const std::array<std::unique_ptr<Sensor>, 3> sensors{
-        std::make_unique<Radar>("FRONT RADAR", radar_zones::kFront),
+    constexpr std::size_t kFrontCamera = 3;
+    const std::array<std::unique_ptr<Sensor>, 4> sensors{
+        std::make_unique<Radar>("FRONT RADAR", radar_zones::kFront, true),
         std::make_unique<Radar>("REAR LEFT RADAR", radar_zones::kRearLeft),
         std::make_unique<Radar>("REAR RIGHT RADAR", radar_zones::kRearRight),
+        std::make_unique<Camera>("FRONT CAMERA", camera_zones::kFront),
     };
+    ObjectList frontObjects;   // what ACC and AEB work with: raw front radar, or the fused list when fusion is on
+    bool fusionOn = false;     // F key
 
     // --- Game state ---
     Screen screen = Screen::Menu;
@@ -112,6 +121,7 @@ int main(int /*argc*/, char* /*argv*/[]) {
     Aeb aeb;   // automatic emergency braking, always on
     Lka lka;   // lane keeping assist
     Bsw bsw;   // blind spot warning
+    RoadHazards hazards;   // fog banks and metal bridges
     Wind wind;
     OilField oil;
     MenuView menu;
@@ -144,6 +154,8 @@ int main(int /*argc*/, char* /*argv*/[]) {
         lka = Lka();
         bsw = Bsw();
         lastBswState = BswState::Off;
+        hazards = RoadHazards();
+        fusionOn = false;
         penalty = 0;
         penaltyFlash = 0.0f;
         wind = Wind();
@@ -215,6 +227,8 @@ int main(int /*argc*/, char* /*argv*/[]) {
                         acc.toggle(ego.speed());
                     } else if (key == SDLK_l) {
                         lka.toggle();
+                    } else if (key == SDLK_f) {
+                        fusionOn = !fusionOn;
                     } else if (key == SDLK_b) {
                         bsw.toggle();
                     }
@@ -244,10 +258,17 @@ int main(int /*argc*/, char* /*argv*/[]) {
         while (accumulator >= cfg::kCycleTime) {
             if (screen == Screen::Playing) {
                 // Perception: every sensor refreshes its object list through the same virtual call.
+                hazards.step(ego);
+                SensorEnvironment env;
+                env.fog = hazards.inFog(ego.position());
+                env.metalBridgeAhead = hazards.bridgeAhead(ego, kGhostMinDistance, kGhostMaxDistance);
                 for (const std::unique_ptr<Sensor>& sensor : sensors) {
-                    sensor->update(ego, traffic.cars());
+                    sensor->update(ego, traffic.cars(), env);
                 }
-                const std::optional<Lead> lead = selectLead(sensors[kFrontRadar]->objects());   // perceive once, use everywhere
+                // Without fusion, ACC and AEB trust the radar alone, ghosts included (phantom braking).
+                frontObjects = fusionOn ? fusion::fuse(*sensors[kFrontRadar], *sensors[kFrontCamera])
+                                        : sensors[kFrontRadar]->objects();
+                const std::optional<Lead> lead = selectLead(frontObjects);   // perceive once, use everywhere
 
                 // Every source puts its request in; the arbiter alone decides what reaches the car.
                 AccelRequests requests;
@@ -299,7 +320,9 @@ int main(int /*argc*/, char* /*argv*/[]) {
                 lastBswState = bsw.state();
 
                 std::optional<float> lkaSteer;
-                const float lkaCommand = lka.step(cfg::kCycleTime, ego.lateral(), allowedSteer.has_value());
+                // LKA needs the camera to see the lane markings.
+                const float lkaCommand = lka.step(cfg::kCycleTime, ego.lateral(), allowedSteer.has_value(),
+                                                  sensors[kFrontCamera]->available());
                 if (lka.state() == LkaState::Active) {
                     lkaSteer = lkaCommand;
                 }
@@ -378,6 +401,7 @@ int main(int /*argc*/, char* /*argv*/[]) {
         switch (lka.state()) {
             case LkaState::Active:     lkaLamp.lamp = AssistLamp::Active;    break;
             case LkaState::Overridden: lkaLamp.lamp = AssistLamp::Degraded;  break;
+            case LkaState::Degraded:   lkaLamp.lamp = AssistLamp::Degraded;  break;   // can't see the lanes
             case LkaState::Off:        lkaLamp.lamp = AssistLamp::Off;       break;
         }
         lkaLamp.level = 1.0f;
@@ -391,6 +415,12 @@ int main(int /*argc*/, char* /*argv*/[]) {
         }
         bswLamp.level = 1.0f;
         hud.wind = screen == Screen::Playing ? wind.current() : 0.0f;
+        hud.cameraOk = screen != Screen::Playing || sensors[kFrontCamera]->available();
+
+        AssistView& fusionLamp = hud.assists[4];   // amber = camera blind, fusion runs on radar alone
+        fusionLamp.lamp = !fusionOn ? AssistLamp::Off
+                                    : (sensors[kFrontCamera]->available() ? AssistLamp::Active : AssistLamp::Degraded);
+        fusionLamp.level = 1.0f;
 
         // --- Render: back to front ---
         gfx.drawRoad(scroll);
@@ -427,19 +457,30 @@ int main(int /*argc*/, char* /*argv*/[]) {
             const float egoX = (ego.lateral() + 0.5f) * cfg::kLaneWidth;
             gfx.drawCar(egoX, layout::kEgoScreenY, CarSkin::Blue);
 
+            // Bridges pass over the cars; fog hides everything inside it, the player's view included.
+            for (const float b : hazards.bridges()) {
+                gfx.drawBridge(layout::kEgoScreenY - (b - ego.position()) * layout::kPixelsPerMeter);
+            }
+            for (const RoadHazards::FogBank& f : hazards.fog()) {
+                gfx.drawFog(layout::kEgoScreenY - (f.end - ego.position()) * layout::kPixelsPerMeter,
+                            layout::kEgoScreenY - (f.start - ego.position()) * layout::kPixelsPerMeter);
+            }
+
             // Debug view of what the sensors detect: each radar's zone, a bracket on every object it
             // reports, and the lead ACC/AEB use (line with gap and relative speed).
             if (showSensorDebug && screen == Screen::Playing) {
                 for (std::size_t s = 0; s < sensors.size(); ++s) {
                     const DetectionZone& zone = sensors[s]->fieldOfView();
-                    const SDL_Color c = s == kFrontRadar ? SDL_Color{60, 230, 140, 255} : SDL_Color{255, 176, 32, 255};
+                    const SDL_Color c = s == kFrontRadar    ? SDL_Color{60, 230, 140, 255}    // green
+                                        : s == kFrontCamera ? SDL_Color{80, 200, 255, 255}    // cyan
+                                                            : SDL_Color{255, 176, 32, 255};   // amber
                     gfx.drawSensorZone(egoX, zone.minLongitudinal, zone.maxLongitudinal, zone.minLateral, zone.maxLateral, c);
                     for (const DetectedObject& o : sensors[s]->objects()) {
                         gfx.drawDetection(egoX + o.lateral * cfg::kLaneWidth,
                                           layout::kEgoScreenY - o.longitudinal * layout::kPixelsPerMeter, c);
                     }
                 }
-                if (const std::optional<Lead> lead = selectLead(sensors[kFrontRadar]->objects())) {
+                if (const std::optional<Lead> lead = selectLead(frontObjects)) {
                     gfx.drawLeadMarker(egoX, lead->gap, lead->relativeSpeed);
                 }
                 if (lka.state() == LkaState::Active) {

@@ -13,6 +13,7 @@ struct DetectedObject {
     float relativeSpeed = 0.0f;   // m/s, object - ego (negative = closing in from ahead / falling back from behind)
     float length = cfg::kCarLength;      // m, estimated size: a radar can tell a motorcycle from a car
     float width = cfg::kCarWidthLanes;   // lanes
+    float confidence = 1.0f;             // 0..1, how sure perception is that this object is real
 };
 
 constexpr std::size_t kMaxObjects = 16;

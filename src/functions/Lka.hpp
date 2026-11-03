@@ -6,7 +6,8 @@
 #include "core/Config.hpp"
 
 // Overridden = switched on, but the driver is steering; LKA steps back and resumes on release.
-enum class LkaState : std::uint8_t { Off, Active, Overridden };
+// Degraded = switched on, but the camera can't see the lane markings (fog); LKA can't steer.
+enum class LkaState : std::uint8_t { Off, Active, Overridden, Degraded };
 
 // Lane Keeping Assist: steers the car back to the centre of the lane it is mostly in.
 // Lateral control: the error is the offset from the lane centre (in lanes), the output a
@@ -20,9 +21,15 @@ public:
         targetLane_ = -1;
     }
 
-    // Every 20 ms. Returns the steering correction in lanes/s (0 when Off or overridden).
-    float step(float dt, float lateral, bool driverSteering) {
+    // Every 20 ms. Returns the steering correction in lanes/s (0 when Off, overridden or degraded).
+    // lanesVisible: the camera currently sees the lane markings.
+    float step(float dt, float lateral, bool driverSteering, bool lanesVisible = true) {
         if (state_ == LkaState::Off) {
+            return 0.0f;
+        }
+        if (!lanesVisible) {
+            state_ = LkaState::Degraded;
+            pid_.reset();   // when the lanes come back, start fresh
             return 0.0f;
         }
         if (driverSteering) {

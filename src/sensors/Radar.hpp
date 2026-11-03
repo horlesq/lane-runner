@@ -2,14 +2,20 @@
 #include "core/Config.hpp"
 #include "sensors/Sensor.hpp"
 
-// Radar: reports every vehicle inside its zone with position and relative speed.
+// Radar: reports every vehicle inside its zone with position and relative speed. It sees through fog,
+// but metal structures like bridges reflect its waves: the front radar then reports a "ghost" object.
 // `final`: nothing derives from Radar, which also lets the compiler call its methods directly.
 class Radar final : public Sensor {
 public:
-    Radar(const char* name, const DetectionZone& zone) : name_(name), zone_(zone) {}
+    Radar(const char* name, const DetectionZone& zone, bool seesBridgeGhosts = false)
+        : name_(name), zone_(zone), seesBridgeGhosts_(seesBridgeGhosts) {}
 
-    void update(const Vehicle& ego, Span<Vehicle> vehicles) override {
+    void update(const Vehicle& ego, Span<Vehicle> vehicles, const SensorEnvironment& env) override {
         objects_.clear();
+        if (seesBridgeGhosts_ && env.metalBridgeAhead) {
+            // Looks like a stopped car in my lane under the bridge: the classic cause of phantom braking.
+            objects_.push_back(DetectedObject{*env.metalBridgeAhead, 0.0f, -ego.speed()});
+        }
         for (const Vehicle& car : vehicles) {
             const DetectedObject o{car.position() - ego.position(), car.lateral() - ego.lateral(),
                                    car.speed() - ego.speed(), car.length(), car.width()};
@@ -25,6 +31,7 @@ public:
 private:
     const char* name_;
     DetectionZone zone_;
+    bool seesBridgeGhosts_;
 };
 
 // Mounting positions. Front: long range, covering the own and next lanes (for cut-ins).

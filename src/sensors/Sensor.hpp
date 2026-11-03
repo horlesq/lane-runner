@@ -1,4 +1,5 @@
 #pragma once
+#include <optional>
 #include "core/Span.hpp"
 #include "perception/ObjectList.hpp"
 #include "world/Vehicle.hpp"
@@ -14,6 +15,12 @@ struct DetectionZone {
         return longitudinal >= minLongitudinal && longitudinal <= maxLongitudinal &&
                lateral >= minLateral && lateral <= maxLateral;
     }
+};
+
+// Conditions that affect what sensors can see this cycle (filled from the road hazards).
+struct SensorEnvironment {
+    bool fog = false;                      // camera can't see
+    std::optional<float> metalBridgeAhead; // m; radar waves bounce off it and create a ghost object
 };
 
 // Interface for every sensor. The rest of the code only talks to Sensor, so a radar, a camera or a
@@ -32,13 +39,18 @@ public:
     Sensor& operator=(const Sensor&) = delete;
 
     // Every 20 ms: refresh objects() from the vehicles around the ego (a view, nothing is copied).
-    virtual void update(const Vehicle& ego, Span<Vehicle> vehicles) = 0;
+    virtual void update(const Vehicle& ego, Span<Vehicle> vehicles, const SensorEnvironment& env) = 0;
     virtual const char* name() const = 0;
     virtual const DetectionZone& fieldOfView() const = 0;
 
     const ObjectList& objects() const { return objects_; }
 
+    // Health: false while the sensor can't work (e.g. a blinded camera). Its object list is then empty
+    // and users must switch to a degraded mode instead of trusting "no objects" as "road is clear".
+    bool available() const { return available_; }
+
 protected:
     Sensor() = default;   // only derived classes can be created
     ObjectList objects_;
+    bool available_ = true;
 };

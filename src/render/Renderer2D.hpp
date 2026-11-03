@@ -34,6 +34,11 @@ public:
     void drawMotorcycle(float centerX, float centerY, CarSkin skin, int signal = 0, bool braking = false);
     void drawPanel(const HudView& hud);
 
+    // Concrete overpass across the road at screen height centerY (drawn over the cars).
+    void drawBridge(float centerY);
+    // Fog bank between two screen heights; hides everything inside it.
+    void drawFog(float topY, float bottomY);
+
     // Oil patch on the road (drawn under the cars). centerX road-relative, centerY screen pixels.
     void drawOil(float centerX, float centerY);
 

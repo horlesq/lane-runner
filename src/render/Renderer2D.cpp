@@ -289,8 +289,83 @@ void Renderer2D::drawPanel(const HudView& hud) {
         font::drawText(r_, arrows, right - font::textWidth(arrows, 2), 410, 2, color::kDegraded);
     }
 
-    font::drawText(r_, "A: ACC  L: LKA  B: BSW", left, cfg::kScreenHeight - 30, 1, color::kLocked);
+    font::drawText(r_, "A:ACC L:LKA B:BSW F:FUS", left, cfg::kScreenHeight - 30, 1, color::kLocked);
     font::drawText(r_, "TAB: DEBUG  ESC: MENU", left, cfg::kScreenHeight - 18, 1, color::kLocked);
+}
+
+void Renderer2D::drawBridge(float centerY) {
+    constexpr int kDeck = 44;   // px, about 2 m of deck seen from above
+    const int top = static_cast<int>(centerY) - kDeck / 2;
+    if (top > cfg::kScreenHeight || top + kDeck + 24 < 0) {
+        return;
+    }
+    const int width = layout::kPanelX;
+    fillRect(0, top + kDeck, width, 22, SDL_Color{10, 12, 20, 90});        // shadow on the road below
+    fillRect(0, top, width, kDeck, SDL_Color{150, 156, 166, 255});          // deck
+    fillRect(0, top, width, 4, SDL_Color{196, 202, 210, 255});              // lit edge
+    fillRect(0, top + kDeck - 4, width, 4, SDL_Color{104, 110, 122, 255});  // shaded edge
+    for (int x = 6; x < width; x += 18) {                                   // steel railing posts
+        fillRect(x, top + 6, 4, 4, SDL_Color{70, 76, 90, 255});
+        fillRect(x, top + kDeck - 10, 4, 4, SDL_Color{70, 76, 90, 255});
+    }
+    fillRect(0, top + 8, width, 2, SDL_Color{70, 76, 90, 255});             // rails
+    fillRect(0, top + kDeck - 8, width, 2, SDL_Color{70, 76, 90, 255});
+}
+
+void Renderer2D::drawFog(float topY, float bottomY) {
+    // A dense core with long, smooth edges, plus soft overlapping "puffs" along each edge so the fog
+    // boundary is cloudy and irregular instead of a straight line.
+    constexpr int kFeather = 150;      // px over which the fog builds up (about 7 m)
+    constexpr float kMaxAlpha = 225.0f;
+    constexpr SDL_Color kFogColour{214, 219, 228, 255};
+    const int top = static_cast<int>(topY);
+    const int bottom = static_cast<int>(bottomY);
+    if (bottom + kFeather < 0 || top - kFeather > cfg::kScreenHeight) {
+        return;
+    }
+    const int width = layout::kPanelX;
+    const auto smooth = [](float x) { return x * x * (3.0f - 2.0f * x); };   // smoothstep: no visible kink
+
+    // 1. Base layer: density rises smoothly from 0 at the outer edge of the feather to full in the core.
+    for (int y = std::max(top - kFeather, 0); y < std::min(bottom + kFeather, cfg::kScreenHeight); y += 2) {
+        float density = 1.0f;
+        if (y < top) {
+            density = smooth(1.0f - static_cast<float>(top - y) / kFeather);
+        } else if (y > bottom) {
+            density = smooth(1.0f - static_cast<float>(y - bottom) / kFeather);
+        }
+        density *= 0.75f;   // the puffs add the rest, so the edge gets lumpy
+        fillRect(0, y, width, 2, SDL_Color{kFogColour.r, kFogColour.g, kFogColour.b, static_cast<Uint8>(kMaxAlpha * density)});
+    }
+
+    // 2. Puffs: soft discs (alpha fades towards the rim) scattered along both edges, drifting sideways.
+    const float t = static_cast<float>(SDL_GetTicks()) / 1000.0f;
+    const auto puff = [&](float cx, float cy, float radius, float strength) {
+        for (float dy = -radius; dy <= radius; dy += 2.0f) {
+            const float y = cy + dy;
+            if (y < 0.0f || y >= static_cast<float>(cfg::kScreenHeight)) {
+                continue;
+            }
+            const float k = 1.0f - (dy / radius) * (dy / radius);
+            const float halfWidth = radius * std::sqrt(k);
+            const auto alpha = static_cast<Uint8>(strength * k * k);
+            fillRect(static_cast<int>(cx - halfWidth), static_cast<int>(y), static_cast<int>(2.0f * halfWidth), 2,
+                     SDL_Color{kFogColour.r, kFogColour.g, kFogColour.b, alpha});
+        }
+    };
+    constexpr int kPuffsPerEdge = 9;
+    for (int edge = 0; edge < 2; ++edge) {
+        const float edgeY = edge == 0 ? static_cast<float>(top) : static_cast<float>(bottom);
+        const float outward = edge == 0 ? -1.0f : 1.0f;   // puffs reach out of the fog into clear air
+        for (int i = 0; i < kPuffsPerEdge; ++i) {
+            const std::uint32_t h = hash(i * 31 + edge * 7 + 5);
+            const float radius = 36.0f + static_cast<float>(h % 50u);
+            const float drift = t * (6.0f + static_cast<float>((h >> 6) % 10u));
+            const float cx = wrap(static_cast<float>(h % 997u) + drift, static_cast<float>(width) + 2.0f * radius) - radius;
+            const float cy = edgeY + outward * static_cast<float>((h >> 10) % 70u);
+            puff(cx, cy, radius, 120.0f);
+        }
+    }
 }
 
 void Renderer2D::drawOil(float centerX, float centerY) {
