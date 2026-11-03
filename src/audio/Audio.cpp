@@ -197,6 +197,23 @@ void Audio::buildClips() {
         }
     }
 
+    // Skid on oil: a lower, wobbling tyre slip with a wet hiss, sliding down in pitch.
+    {
+        std::vector<float>& c = clip(Sfx::Skid);
+        const std::size_t n = frames(sr, 0.6f);
+        float filtered = 0.0f;
+        float phase = 0.0f;
+        for (std::size_t i = 0; i < n; ++i) {
+            const float t = static_cast<float>(i) / static_cast<float>(sr);
+            const float x = static_cast<float>(i) / static_cast<float>(n);
+            const float envelope = std::min(1.0f, t * 30.0f) * (1.0f - x);
+            const float freq = 900.0f - 400.0f * x + 120.0f * std::sin(2.0f * kPi * 9.0f * t);
+            phase = std::fmod(phase + freq / static_cast<float>(sr), 1.0f);
+            filtered += (noise.next() - filtered) * 0.2f;
+            c.push_back(envelope * (0.12f * std::sin(2.0f * kPi * phase) + 0.25f * filtered));
+        }
+    }
+
     // Crash: low thump + filtered noise that darkens as it fades + gritty sample-and-hold crunch.
     {
         std::vector<float>& c = clip(Sfx::Crash);

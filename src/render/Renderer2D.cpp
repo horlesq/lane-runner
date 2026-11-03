@@ -75,6 +75,10 @@ bool Renderer2D::loadAssets(const std::string& assetDir) {
     tree_ = loadTexture(r_, png + "Objects/tree_small.png");
     treeLarge_ = loadTexture(r_, png + "Objects/tree_large.png");
     rock_ = loadTexture(r_, png + "Objects/rock2.png");
+    oil_ = loadTexture(r_, png + "Objects/oil.png");
+    if (!oil_) {
+        return false;
+    }
 
     menuBadge_ = loadTexture(r_, assetDir + "art/menu-logo.png");
     if (menuBadge_) {
@@ -152,11 +156,27 @@ void Renderer2D::drawScenery(float scrollPx) {
     }
 }
 
-void Renderer2D::drawCar(float centerX, float centerY, CarSkin skin, std::size_t model) {
+void Renderer2D::drawCar(float centerX, float centerY, CarSkin skin, std::size_t model, int signal) {
     const CarSprite& sprite = cars_[static_cast<std::size_t>(skin)][model % kCarModelCount];
     const float height = static_cast<float>(layout::kCarHeight) * sprite.lengthScale;
-    drawSprite(sprite.texture.get(), static_cast<float>(layout::kRoadX) + centerX, centerY,
-               static_cast<float>(layout::kCarWidth), height, true);
+    const float x = static_cast<float>(layout::kRoadX) + centerX;
+    drawSprite(sprite.texture.get(), x, centerY, static_cast<float>(layout::kCarWidth), height, true);
+
+    if (signal != 0 && blink(500)) {
+        // Amber lamps on the front and rear corner of the indicated side: a glow reaching past the
+        // car's edge, a dark outline so they read on orange and yellow cars too, and a bright core.
+        constexpr SDL_Color kGlow{255, 176, 0, 110};
+        constexpr SDL_Color kOutline{20, 16, 10, 230};
+        constexpr SDL_Color kLamp{255, 214, 60, 255};
+        const int side = static_cast<int>(x + static_cast<float>(signal) * (layout::kCarWidth / 2.0f - 2.0f));
+        const int front = static_cast<int>(centerY - height / 2.0f + 8.0f);
+        const int rear = static_cast<int>(centerY + height / 2.0f - 8.0f);
+        for (int y : {front, rear}) {
+            fillRect(side - 9, y - 8, 18, 16, kGlow);
+            fillRect(side - 5, y - 4, 10, 8, kOutline);
+            fillRect(side - 4, y - 3, 8, 6, kLamp);
+        }
+    }
 }
 
 void Renderer2D::drawPanel(const HudView& hud) {
@@ -238,6 +258,126 @@ void Renderer2D::drawPanel(const HudView& hud) {
 
     font::drawText(r_, "A: ACC   L: LKA", left, cfg::kScreenHeight - 30, 1, color::kLocked);
     font::drawText(r_, "TAB: DEBUG  ESC: MENU", left, cfg::kScreenHeight - 18, 1, color::kLocked);
+}
+
+void Renderer2D::drawOil(float centerX, float centerY) {
+    // ~2.8 m x 2.4 m slick, flat on the road (no drop shadow): darkened so it stands out from the
+    // asphalt, with a smaller bluish sheen on top like light on a wet film.
+    SDL_Texture* tex = oil_.get();
+    const float x = static_cast<float>(layout::kRoadX) + centerX;
+    SDL_SetTextureColorMod(tex, 70, 62, 80);
+    drawSprite(tex, x, centerY, 60.0f, 52.0f, false);
+    SDL_SetTextureColorMod(tex, 150, 190, 255);
+    SDL_SetTextureAlphaMod(tex, 70);
+    drawSprite(tex, x - 6.0f, centerY - 6.0f, 26.0f, 20.0f, false);
+    SDL_SetTextureColorMod(tex, 255, 255, 255);
+    SDL_SetTextureAlphaMod(tex, 255);
+}
+
+void Renderer2D::drawWind(float wind, float scrollPx) {
+    // Integrate the air's movement every frame (also when calm, so nothing jumps when a gust starts).
+    constexpr float kPxPerWind = 420.0f;   // screen px/s per lane/s of wind
+    const Uint32 now = SDL_GetTicks();
+    const float frameDt = windTicks_ == 0 ? 0.0f : std::min(static_cast<float>(now - windTicks_) / 1000.0f, 0.1f);
+    windTicks_ = now;
+    windTravel_ += wind * kPxPerWind * frameDt;
+
+    const float strength = std::min(std::fabs(wind), 1.0f);
+    if (strength < 0.05f) {
+        return;
+    }
+    // Flat, smooth shapes like the rest of the art:
+    //  - gust glyphs: a tapering white stroke that curls up at its head (the weather-map wind symbol),
+    //  - leaves: pointed ovals in the trees' greens with a darker midrib, spinning as they tumble.
+    // Each item has a fixed random row; it travels with the wind and scrolls down with the road.
+    const float t = static_cast<float>(SDL_GetTicks()) / 1000.0f;
+    const float dir = wind > 0.0f ? 1.0f : -1.0f;
+    const float width = static_cast<float>(layout::kPanelX);
+    const auto rowY = [&](std::uint32_t h, float parallax) {
+        return wrap(static_cast<float>((h >> 12) % 480u) + scrollPx * parallax, static_cast<float>(cfg::kScreenHeight));
+    };
+
+    // One segment of a stroke: a quad from a to b whose width and colour change along it.
+    const auto segment = [this](SDL_FPoint a, SDL_FPoint b, float wa, float wb, SDL_Color ca, SDL_Color cb) {
+        const float dx = b.x - a.x;
+        const float dy = b.y - a.y;
+        const float len = std::max(std::sqrt(dx * dx + dy * dy), 0.001f);
+        const float nx = -dy / len;
+        const float ny = dx / len;
+        const SDL_Vertex v[4]{
+            {{a.x + nx * wa / 2, a.y + ny * wa / 2}, ca, {0, 0}}, {{a.x - nx * wa / 2, a.y - ny * wa / 2}, ca, {0, 0}},
+            {{b.x - nx * wb / 2, b.y - ny * wb / 2}, cb, {0, 0}}, {{b.x + nx * wb / 2, b.y + ny * wb / 2}, cb, {0, 0}},
+        };
+        const int indices[6]{0, 1, 2, 0, 2, 3};
+        SDL_RenderGeometry(r_, nullptr, v, 4, indices, 6);
+    };
+
+    const int gusts = static_cast<int>(9.0f * strength) + 1;
+    for (int i = 0; i < gusts; ++i) {
+        const std::uint32_t h = hash(i + 101);
+        const float pace = 0.8f + static_cast<float>((h >> 8) % 140u) / 350.0f;   // each gust a bit faster or slower
+        constexpr float kTail = 64.0f;   // px of straight tail behind the curl
+        constexpr float kRadius = 8.0f;
+        const float headX = wrap(static_cast<float>(h % 997u) + windTravel_ * pace, width + 3.0f * kTail) - kTail;
+        const float baseY = rowY(h, 0.6f);
+        const float flipY = (h % 2u == 0u) ? 1.0f : -1.0f;   // half curl upwards, half downwards
+        const float maxAlpha = 150.0f + 90.0f * strength;
+
+        // Path from the faint tail (s = 0) to the head, which rolls into a circle (s > kCurlStart).
+        constexpr int kPoints = 28;
+        constexpr float kCurlStart = 0.6f;
+        SDL_FPoint prev{};
+        float prevW = 0.0f;
+        SDL_Color prevC{};
+        for (int p = 0; p < kPoints; ++p) {
+            const float s = static_cast<float>(p) / static_cast<float>(kPoints - 1);
+            float lx = 0.0f;
+            float ly = 0.0f;
+            if (s < kCurlStart) {
+                lx = -kTail * (1.0f - s / kCurlStart);
+                ly = 1.5f * std::sin(s * 9.0f);
+            } else {
+                const float angle = (s - kCurlStart) / (1.0f - kCurlStart) * 1.6f * 3.14159f;
+                lx = kRadius * std::sin(angle);
+                ly = -kRadius + kRadius * std::cos(angle);
+            }
+            const SDL_FPoint pt{headX + dir * lx, baseY + flipY * ly};
+            const float w = 1.0f + 3.0f * std::sin(3.14159f * std::min(s, 0.95f));
+            const auto a = static_cast<Uint8>(maxAlpha * std::min(1.0f, s * 2.5f));
+            const SDL_Color c{245, 249, 255, a};
+            if (p > 0) {
+                segment(prev, pt, prevW, w, prevC, c);
+            }
+            prev = pt;
+            prevW = w;
+            prevC = c;
+        }
+    }
+
+    constexpr SDL_Color kLeafGreen{88, 196, 110, 255};
+    constexpr SDL_Color kLeafAutumn{232, 192, 70, 255};
+    constexpr SDL_Color kMidrib{30, 110, 62, 255};
+    const int leaves = static_cast<int>(12.0f * strength);
+    for (int i = 0; i < leaves; ++i) {
+        const std::uint32_t h = hash(i + 4099);
+        const float pace = 1.1f + static_cast<float>((h >> 8) % 200u) / 400.0f;   // leaves fly a little faster than the gusts
+        const float cx = wrap(static_cast<float>(h % 991u) + windTravel_ * pace, width + 24.0f) - 12.0f;
+        const float cy = rowY(h, 0.8f) + 7.0f * std::sin(t * 6.0f + static_cast<float>(h % 50u));
+        const float spin = t * (4.0f + static_cast<float>(h % 4u)) * dir + static_cast<float>(h % 31u);
+        const float halfLen = 9.0f;
+        const float halfWidth = 4.5f * (0.35f + 0.65f * std::fabs(std::cos(t * 5.0f + static_cast<float>(h % 13u))));   // tumbling
+        const float cs = std::cos(spin);
+        const float sn = std::sin(spin);
+        const auto at = [&](float along, float across) {
+            return SDL_FPoint{cx + along * cs - across * sn, cy + along * sn + across * cs};
+        };
+        const SDL_Color body = (h % 5u == 0u) ? kLeafAutumn : kLeafGreen;
+        const SDL_Vertex v[4]{{at(halfLen, 0), body, {0, 0}}, {at(0, halfWidth), body, {0, 0}},
+                              {at(-halfLen, 0), body, {0, 0}}, {at(0, -halfWidth), body, {0, 0}}};
+        const int indices[6]{0, 1, 2, 0, 2, 3};
+        SDL_RenderGeometry(r_, nullptr, v, 4, indices, 6);
+        segment(at(-halfLen - 2.0f, 0), at(halfLen - 1.0f, 0), 1.2f, 1.2f, kMidrib, kMidrib);   // midrib and stem
+    }
 }
 
 void Renderer2D::drawLaneTarget(float centerX) {

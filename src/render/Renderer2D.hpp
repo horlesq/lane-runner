@@ -28,8 +28,15 @@ public:
     // scrollPx grows as the ego car drives forward; road markings and scenery move down with it.
     void drawRoad(float scrollPx);
     // model must be < kCarModelCount. Shorter models keep their real proportions.
-    void drawCar(float centerX, float centerY, CarSkin skin, std::size_t model = 0);
+    // signal: turn indicator, -1 left, +1 right, 0 off (blinks amber on the front and rear corner).
+    void drawCar(float centerX, float centerY, CarSkin skin, std::size_t model = 0, int signal = 0);
     void drawPanel(const HudView& hud);
+
+    // Oil patch on the road (drawn under the cars). centerX road-relative, centerY screen pixels.
+    void drawOil(float centerX, float centerY);
+
+    // Wind streaks blowing across the road; wind in lanes/s (+ = to the right), 0 draws nothing.
+    void drawWind(float wind, float scrollPx);
 
     // Sensor debug view: line from the ego's nose to the detected lead car, with gap and relative speed.
     // egoX is road-relative like drawCar; gap in m (bumper to bumper), relativeSpeed in m/s.
@@ -60,5 +67,11 @@ private:
     TexturePtr tree_;
     TexturePtr treeLarge_;
     TexturePtr rock_;
+    TexturePtr oil_;
+
+    // Wind animation: distance the air has moved, integrated frame by frame (not time x speed,
+    // which would jump backwards whenever the gust weakens).
+    float windTravel_ = 0.0f;   // px, signed: + = to the right
+    Uint32 windTicks_ = 0;      // time of the previous drawWind call
     TexturePtr menuBadge_;   // optional art/menu-logo.png; the menu skips it when absent
 };

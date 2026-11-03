@@ -7,7 +7,7 @@ class Vehicle {
     public:
         Vehicle(int lane, float speed, float position = 0.0f)
             : lane_(lane), lateral_(static_cast<float>(lane)), position_(position), speed_(speed), accel_(0.0f), variant_(0),
-              freeSteering_(false), steerCommand_(0.0f), lateralRate_(0.0f), push_(0.0f) {}
+              freeSteering_(false), steerCommand_(0.0f), lateralRate_(0.0f), push_(0.0f), hitCurb_(false), grip_(1.0f) {}
 
         Vehicle() : Vehicle(0, 0.0f) {}
 
@@ -27,13 +27,15 @@ class Vehicle {
         void enableFreeSteering() { freeSteering_ = true; }
         void steer(float lanesPerSecond) { steerCommand_ = lanesPerSecond; }
         void push(float lanesPerSecond) { push_ = lanesPerSecond; }   // disturbance for the next step
+        void setGrip(float grip) { grip_ = std::clamp(grip, 0.0f, 1.0f); }   // 1 = dry road, low = slippery
         float lateralRate() const { return lateralRate_; }
+        bool hitCurb() const { return hitCurb_; }   // ran into the road-side barrier in the last step
 
         void step(float dt) {
             if (freeSteering_) {
                 stepFreeSteering(dt);
             } else {
-                constexpr float kLaneChangeRate = 4.0f;
+                constexpr float kLaneChangeRate = 1.25f;   // lanes/s: a lane change takes 0.8 s
                 const float diff = static_cast<float>(lane_) - lateral_;
                 const float maxMove = kLaneChangeRate * dt;
                 lateral_ += std::clamp(diff, -maxMove, maxMove);
@@ -60,13 +62,15 @@ class Vehicle {
     private:
         void stepFreeSteering(float dt) {
             constexpr float kSteerLag = 0.15f;   // s; the car can't change direction instantly
-            lateralRate_ += (steerCommand_ - lateralRate_) * std::min(1.0f, dt / kSteerLag);
+            // Low grip: the tyres barely respond, so the car keeps sliding the way it was going.
+            lateralRate_ += (steerCommand_ - lateralRate_) * std::min(1.0f, dt / kSteerLag) * grip_;
             lateral_ += (lateralRate_ + push_) * dt;
 
-            // The curbs stop the car at the road edge.
+            // The barrier at the road edge stops the car; the game treats touching it as a crash.
             constexpr float kMin = -0.5f + cfg::kCarWidthLanes / 2.0f;
             constexpr float kMax = static_cast<float>(cfg::kLaneCount) - 0.5f - cfg::kCarWidthLanes / 2.0f;
-            if (lateral_ < kMin || lateral_ > kMax) {
+            hitCurb_ = lateral_ < kMin || lateral_ > kMax;
+            if (hitCurb_) {
                 lateral_ = std::clamp(lateral_, kMin, kMax);
                 lateralRate_ = 0.0f;
             }
@@ -85,4 +89,6 @@ class Vehicle {
         float steerCommand_;   // lanes/s requested by the driver or LKA
         float lateralRate_;    // lanes/s actually moving sideways
         float push_;           // lanes/s from outside forces (wind)
+        bool hitCurb_;
+        float grip_;           // 0..1
 };

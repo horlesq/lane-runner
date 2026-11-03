@@ -20,6 +20,7 @@
 #include "world/Lead.hpp"
 #include "world/Traffic.hpp"
 #include "world/Vehicle.hpp"
+#include "world/Oil.hpp"
 #include "world/Wind.hpp"
 
 // ASSET_DIR is injected by CMake; wrap the macro in a typed constant once and use that.
@@ -92,6 +93,7 @@ int main(int /*argc*/, char* /*argv*/[]) {
     Aeb aeb;   // automatic emergency braking, always on
     Lka lka;   // lane keeping assist
     Wind wind;
+    OilField oil;
     MenuView menu;
     HudView hud;
     int best = 0;
@@ -118,6 +120,7 @@ int main(int /*argc*/, char* /*argv*/[]) {
         aeb = Aeb();
         lka = Lka();
         wind = Wind();
+        oil = OilField();
         lastAebStage = AebStage::Inactive;
         screen = Screen::Playing;
         audio.play(Sfx::Start);
@@ -256,7 +259,13 @@ int main(int /*argc*/, char* /*argv*/[]) {
                     lkaSteer = lkaCommand;
                 }
                 ego.steer(arbitrateSteer(driverSteer, lkaSteer).rate);
-                ego.push(wind.step(cfg::kCycleTime));
+                // Road surface: oil takes away grip (for the driver and LKA alike) and makes the car slide.
+                const GripEffect surface = oil.step(cfg::kCycleTime, ego);
+                if (surface.justHit) {
+                    audio.play(Sfx::Skid);
+                }
+                ego.setGrip(surface.grip);
+                ego.push(wind.step(cfg::kCycleTime) + surface.slide);
             } else {
                 ego.setAcceleration(0.0f);   // menu: an invisible camera cruises through traffic
             }
@@ -266,22 +275,22 @@ int main(int /*argc*/, char* /*argv*/[]) {
             if (screen == Screen::Playing && ego.lane() != laneBefore) {
                 audio.play(Sfx::LaneChange);   // whoosh when crossing a lane line
             }
-            traffic.step(cfg::kCycleTime, ego);
+            traffic.step(cfg::kCycleTime, ego, screen == Screen::Playing);   // title screen: NPCs ignore the camera
             accumulator -= cfg::kCycleTime;
 
             if (screen != Screen::Playing) {
                 continue;
             }
-            for (const Vehicle& car : traffic.cars()) {
-                if (collides(ego, car)) {
-                    audio.play(Sfx::Crash);
-                    lastScore = scoreOf(ego);
-                    newBest = lastScore > best;
-                    best = std::max(best, lastScore);
-                    screen = Screen::GameOver;
-                    accumulator = 0.0f;
-                    break;
-                }
+            // Crash: into another car (from any side), or into the road-side barrier.
+            const bool hitCar = std::any_of(traffic.cars().begin(), traffic.cars().end(),
+                                            [&](const Vehicle& car) { return collides(ego, car); });
+            if (hitCar || ego.hitCurb()) {
+                audio.play(Sfx::Crash);
+                lastScore = scoreOf(ego);
+                newBest = lastScore > best;
+                best = std::max(best, lastScore);
+                screen = Screen::GameOver;
+                accumulator = 0.0f;
             }
         }
 
@@ -322,14 +331,25 @@ int main(int /*argc*/, char* /*argv*/[]) {
         // --- Render: back to front ---
         gfx.drawRoad(scroll);
 
-        for (const Vehicle& car : traffic.cars()) {
+        if (screen != Screen::Menu) {
+            for (const OilField::Patch& p : oil.patches()) {
+                const float y = layout::kEgoScreenY - (p.position - ego.position()) * layout::kPixelsPerMeter;
+                if (y > -60.0f && y < static_cast<float>(cfg::kScreenHeight) + 60.0f) {
+                    gfx.drawOil((p.lateral + 0.5f) * cfg::kLaneWidth, y);
+                }
+            }
+        }
+
+        for (std::size_t i = 0; i < Traffic::kMaxCars; ++i) {
+            const Vehicle& car = traffic.cars()[i];
             // Traffic is drawn relative to the ego: 1 m ahead = kPixelsPerMeter px higher on screen.
             const float x = (car.lateral() + 0.5f) * cfg::kLaneWidth;
             const float y = layout::kEgoScreenY - (car.position() - ego.position()) * layout::kPixelsPerMeter;
 
             // One variant number encodes both colour and body style.
             const auto variant = static_cast<std::size_t>(car.variant());
-            gfx.drawCar(x, y, kNpcSkins[variant % kNpcSkins.size()], variant / kNpcSkins.size());
+            gfx.drawCar(x, y, kNpcSkins[variant % kNpcSkins.size()], variant / kNpcSkins.size(),
+                        traffic.driver(i).signal);
         }
 
         if (screen == Screen::Menu) {
@@ -347,6 +367,10 @@ int main(int /*argc*/, char* /*argv*/[]) {
                 if (lka.state() == LkaState::Active) {
                     gfx.drawLaneTarget((static_cast<float>(lka.targetLane()) + 0.5f) * cfg::kLaneWidth);
                 }
+            }
+
+            if (screen == Screen::Playing) {
+                gfx.drawWind(wind.current(), scroll);
             }
 
             if (screen == Screen::Playing && aeb.stage() != AebStage::Inactive) {

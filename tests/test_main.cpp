@@ -9,7 +9,11 @@
 #include "control/Arbiter.hpp"
 #include "functions/Aeb.hpp"
 #include "functions/Lka.hpp"
+#include "world/Collision.hpp"
+#include "world/DriverModel.hpp"
 #include "world/Lead.hpp"
+#include "world/Oil.hpp"
+#include "world/Traffic.hpp"
 #include "world/Vehicle.hpp"
 
 static int g_failures = 0;
@@ -116,17 +120,18 @@ static void testCutInIsDetected() {
 
     CHECK(!findLead(ego, cars).has_value());   // still fully in lane 2: not my lead
 
-    // It moves 0.08 lanes per 20 ms cycle. It counts once it is closer than kCarWidthLanes (0.45) to me.
+    // It moves 0.025 lanes per 20 ms cycle (a lane change takes 0.8 s).
+    // It counts once it is closer than kCarWidthLanes (0.45) to me.
     cars[0].changeLane(-1);
-    for (int i = 0; i < 4; ++i) {
+    for (int i = 0; i < 12; ++i) {
         cars[0].step(0.02f);
     }
-    CHECK(!findLead(ego, cars).has_value());   // lateral 1.68: 0.68 lanes away, not overlapping yet
+    CHECK(!findLead(ego, cars).has_value());   // lateral 1.70: 0.70 lanes away, not overlapping yet
 
-    for (int i = 0; i < 4; ++i) {
+    for (int i = 0; i < 18; ++i) {
         cars[0].step(0.02f);
     }
-    CHECK(findLead(ego, cars).has_value());    // lateral 1.36: 0.36 lanes away, overlapping -> lead
+    CHECK(findLead(ego, cars).has_value());    // lateral 1.25: 0.25 lanes away, overlapping -> lead
 }
 
 // --- ACC ---
@@ -287,6 +292,7 @@ static void testFreeSteeringStopsAtCurb() {
     }
     CHECK(near(car.lateral(), -0.5f + cfg::kCarWidthLanes / 2.0f));
     CHECK(car.lane() == 0);
+    CHECK(car.hitCurb());   // the game turns this into a crash
 }
 
 // Off: no correction at all.
@@ -344,6 +350,116 @@ static void testLkaDriverOverride() {
     CHECK(arbitrateSteer(std::nullopt, -1.2f).source == SteerSource::Lka);
 }
 
+// --- Traffic: driver models ---
+
+// IDM on an empty road: speeds up below the desired speed, holds it, slows down above it.
+static void testIdmFreeRoad() {
+    driver::Profile p;
+    p.desiredSpeed = 20.0f;
+    CHECK(driver::idmAccel(10.0f, p, std::nullopt) > 1.0f);
+    CHECK(near(driver::idmAccel(20.0f, p, std::nullopt), 0.0f, 0.01f));
+    CHECK(driver::idmAccel(25.0f, p, std::nullopt) < 0.0f);
+}
+
+// IDM behind a leader: a far car at the same speed barely matters, a close car we're closing on
+// means hard braking.
+static void testIdmFollowsLeader() {
+    driver::Profile p;
+    p.desiredSpeed = 20.0f;
+    const float farSameSpeed = driver::idmAccel(20.0f, p, driver::Neighbour{80.0f, 20.0f});
+    const float closeClosing = driver::idmAccel(20.0f, p, driver::Neighbour{8.0f, 10.0f});
+    CHECK(farSameSpeed > -0.3f);
+    CHECK(closeClosing < -5.0f);
+}
+
+// MOBIL: unsafe when the new follower would have to brake harder than allowed; worth it only when
+// my gain beats the threshold plus the (politeness-weighted) loss I cause the follower.
+static void testMobilDecision() {
+    driver::Profile p;   // politeness 0.3, safeDecel 3
+    const driver::LaneChangeOption good{-1.0f, 1.0f, 0.5f, 0.2f};    // I gain 2.0, follower loses 0.3
+    const driver::LaneChangeOption cutIn{-1.0f, 1.0f, 0.5f, -4.0f};  // follower would brake at -4
+    const driver::LaneChangeOption tiny{0.0f, 0.1f, 0.0f, 0.0f};     // gain below the threshold
+    CHECK(driver::isSafe(good, p) && driver::incentive(good, p) > 0.0f);
+    CHECK(!driver::isSafe(cutIn, p));
+    CHECK(driver::incentive(tiny, p) < 0.0f);
+}
+
+// Long run: 3 minutes of traffic around a player who brakes sensibly for slower cars, at a slow and
+// a fast speed. No NPC may ever hit another NPC or the player, and lane changes must happen.
+static void testTrafficNeverCrashes() {
+    for (const float egoDesired : {8.0f, 26.0f}) {
+        Vehicle ego(1, egoDesired, 0.0f);
+        ego.enableFreeSteering();
+        Traffic traffic;
+        driver::Profile egoDriver;
+        egoDriver.desiredSpeed = egoDesired;
+        int crashes = 0;
+
+        for (int step = 0; step < 50 * 180; ++step) {
+            const std::optional<Lead> lead = findLead(ego, traffic);
+            ego.setAcceleration(driver::idmAccel(ego.speed(), egoDriver,
+                lead ? std::optional<driver::Neighbour>(driver::Neighbour{lead->gap, ego.speed() + lead->relativeSpeed})
+                     : std::nullopt));
+            ego.step(0.02f);
+            traffic.step(0.02f, ego);
+
+            const auto& cars = traffic.cars();
+            for (std::size_t a = 0; a < cars.size(); ++a) {
+                crashes += collides(ego, cars[a]) ? 1 : 0;
+                for (std::size_t b = a + 1; b < cars.size(); ++b) {
+                    crashes += collides(cars[a], cars[b]) ? 1 : 0;
+                }
+            }
+        }
+        CHECK(crashes == 0);
+        CHECK(traffic.laneChanges() > 20);
+    }
+}
+
+// --- Road surface ---
+
+// Low grip: the same steering input moves the car sideways much less.
+static void testLowGripWeakensSteering() {
+    Vehicle dry(1, 20.0f);
+    Vehicle oily(1, 20.0f);
+    dry.enableFreeSteering();
+    oily.enableFreeSteering();
+    oily.setGrip(0.15f);
+    dry.steer(2.0f);
+    oily.steer(2.0f);
+    for (int i = 0; i < 10; ++i) {   // 0.2 s of full steering
+        dry.step(0.02f);
+        oily.step(0.02f);
+    }
+    CHECK(oily.lateral() - 1.0f < 0.4f * (dry.lateral() - 1.0f));
+}
+
+// Driving onto a patch: grip drops, the car is pushed sideways, then the tyres clean up again.
+static void testOilMakesCarSlide() {
+    OilField oil;
+    const OilField::Patch patch = oil.patches()[0];
+    Vehicle car(0, 20.0f, patch.position);   // right on the first patch
+    car.enableFreeSteering();
+    for (int lane = 0; lane < cfg::kLaneCount; ++lane) {
+        if (OilField::touches(patch, Vehicle(lane, 20.0f, patch.position))) {
+            car = Vehicle(lane, 20.0f, patch.position);
+            break;
+        }
+    }
+
+    const GripEffect hit = oil.step(0.02f, car);
+    CHECK(hit.justHit);
+    CHECK(hit.grip < 0.3f);
+    CHECK(std::abs(hit.slide) > 0.5f);
+
+    const Vehicle away(car.lane(), 20.0f, patch.position + 30.0f);   // drove off the patch
+    GripEffect later;
+    for (int i = 0; i < 75; ++i) {   // 1.5 s
+        later = oil.step(0.02f, away);
+    }
+    CHECK(near(later.grip, 1.0f) && near(later.slide, 0.0f));
+}
+
 int main() {
     testProportionalOnly();
     testOutputIsClamped();
@@ -365,6 +481,12 @@ int main() {
     testLkaCentersCar();
     testLkaHoldsLaneInWind();
     testLkaDriverOverride();
+    testIdmFreeRoad();
+    testIdmFollowsLeader();
+    testMobilDecision();
+    testTrafficNeverCrashes();
+    testLowGripWeakensSteering();
+    testOilMakesCarSlide();
 
     std::printf(g_failures == 0 ? "All tests passed\n" : "%d test(s) failed\n", g_failures);
     return g_failures == 0 ? 0 : 1;
