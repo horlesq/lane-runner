@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
+#include <memory>
 #include <optional>
 #include <string>
 #include <SDL_image.h>
@@ -11,11 +12,14 @@
 #include "core/Config.hpp"
 #include "functions/Acc.hpp"
 #include "functions/Aeb.hpp"
+#include "functions/Bsw.hpp"
 #include "functions/Lka.hpp"
 #include "platform/SdlContext.hpp"
 #include "platform/Window.hpp"
 #include "render/Layout.hpp"
 #include "render/Renderer2D.hpp"
+#include "sensors/Radar.hpp"
+#include "sensors/Sensor.hpp"
 #include "world/Collision.hpp"
 #include "world/Lead.hpp"
 #include "world/Traffic.hpp"
@@ -37,7 +41,8 @@ static_assert(kMenuShop != kMenuStart, "Menu indices must be distinct");
 
 constexpr float kStartSpeed = 20.0f;   // m/s
 constexpr float kMenuSpeed = 22.0f;    // m/s, camera speed behind the title menu
-constexpr float kTopSpeed = 40.0f;     // m/s, only used to scale the engine sound
+constexpr float kTopSpeed = 40.0f;     // m/s (144 km/h); throttle fades out towards it, also scales the engine sound
+constexpr float kMaxThrottle = 4.0f;   // m/s^2 at low speed
 constexpr float kDriverSteerRate = 2.0f;   // lanes/s while ← or → is held; stronger than LKA's 1.2
 
 int main(int /*argc*/, char* /*argv*/[]) {
@@ -85,6 +90,17 @@ int main(int /*argc*/, char* /*argv*/[]) {
 
     constexpr std::array<CarSkin, 4> kNpcSkins{CarSkin::Red, CarSkin::Green, CarSkin::Yellow, CarSkin::Black};
 
+    // --- Sensors: created once at startup, then only used through the Sensor interface ---
+    // unique_ptr<Sensor> owns a Radar; destroying it through the base pointer is why ~Sensor is virtual.
+    constexpr std::size_t kFrontRadar = 0;
+    constexpr std::size_t kRearLeftRadar = 1;
+    constexpr std::size_t kRearRightRadar = 2;
+    const std::array<std::unique_ptr<Sensor>, 3> sensors{
+        std::make_unique<Radar>("FRONT RADAR", radar_zones::kFront),
+        std::make_unique<Radar>("REAR LEFT RADAR", radar_zones::kRearLeft),
+        std::make_unique<Radar>("REAR RIGHT RADAR", radar_zones::kRearRight),
+    };
+
     // --- Game state ---
     Screen screen = Screen::Menu;
     Vehicle ego(1, kMenuSpeed);
@@ -92,6 +108,7 @@ int main(int /*argc*/, char* /*argv*/[]) {
     Acc acc;   // adaptive cruise control
     Aeb aeb;   // automatic emergency braking, always on
     Lka lka;   // lane keeping assist
+    Bsw bsw;   // blind spot warning
     Wind wind;
     OilField oil;
     MenuView menu;
@@ -107,6 +124,7 @@ int main(int /*argc*/, char* /*argv*/[]) {
     float warningChimeTimer = 0.0f;   // s until the next warning chime
     constexpr float kWarningChimeInterval = 0.5f;
     const auto isBraking = [](AebStage s) { return s == AebStage::PartialBrake || s == AebStage::FullBrake; };
+    BswState lastBswState = BswState::Off;
 
     const auto scoreOf = [](const Vehicle& v) {
         return static_cast<int>(v.position() * layout::kPixelsPerMeter / 10.0f);
@@ -119,6 +137,8 @@ int main(int /*argc*/, char* /*argv*/[]) {
         acc = Acc();
         aeb = Aeb();
         lka = Lka();
+        bsw = Bsw();
+        lastBswState = BswState::Off;
         wind = Wind();
         oil = OilField();
         lastAebStage = AebStage::Inactive;
@@ -132,6 +152,7 @@ int main(int /*argc*/, char* /*argv*/[]) {
         acc = Acc();
         aeb = Aeb();
         lka = Lka();
+        bsw = Bsw();
         menu.best = best;
         screen = Screen::Menu;
     };
@@ -187,6 +208,8 @@ int main(int /*argc*/, char* /*argv*/[]) {
                         acc.toggle(ego.speed());
                     } else if (key == SDLK_l) {
                         lka.toggle();
+                    } else if (key == SDLK_b) {
+                        bsw.toggle();
                     }
                     break;
                 case Screen::GameOver:
@@ -213,8 +236,13 @@ int main(int /*argc*/, char* /*argv*/[]) {
         // --- Logic: zero or more fixed cycles per frame ---
         while (accumulator >= cfg::kCycleTime) {
             if (screen == Screen::Playing) {
+                // Perception: every sensor refreshes its object list through the same virtual call.
+                for (const std::unique_ptr<Sensor>& sensor : sensors) {
+                    sensor->update(ego, traffic.cars());
+                }
+                const std::optional<Lead> lead = selectLead(sensors[kFrontRadar]->objects());   // perceive once, use everywhere
+
                 // Every source puts its request in; the arbiter alone decides what reaches the car.
-                const std::optional<Lead> lead = findLead(ego, traffic);   // perceive once, use everywhere
                 AccelRequests requests;
 
                 // Held keys act every cycle, so they are read as state rather than events.
@@ -223,7 +251,9 @@ int main(int /*argc*/, char* /*argv*/[]) {
                     requests.driverBrake = -8.0f;
                     acc.cancel();                 // the driver's brake cancels ACC
                 } else if (keys[SDL_SCANCODE_UP]) {
-                    requests.driverThrottle = 4.0f;
+                    // Full throttle fades out near top speed, like air drag catching up with the engine.
+                    const float headroom = 1.0f - (ego.speed() / kTopSpeed) * (ego.speed() / kTopSpeed);
+                    requests.driverThrottle = kMaxThrottle * std::max(headroom, 0.0f);
                 }
                 if (acc.state() == AccState::Active) {
                     requests.acc = acc.step(cfg::kCycleTime, ego.speed(), lead);
@@ -253,12 +283,20 @@ int main(int /*argc*/, char* /*argv*/[]) {
                 if (left != right) {   // both or neither held: no steering
                     driverSteer = left ? -kDriverSteerRate : kDriverSteerRate;
                 }
+                // BSW removes steering towards an occupied blind spot; LKA then sees "no driver" and re-centres.
+                const std::optional<float> allowedSteer = bsw.step(sensors[kRearLeftRadar]->objects(),
+                                                                   sensors[kRearRightRadar]->objects(), driverSteer);
+                if (bsw.state() == BswState::Intervening && lastBswState != BswState::Intervening) {
+                    audio.play(Sfx::CollisionWarning);
+                }
+                lastBswState = bsw.state();
+
                 std::optional<float> lkaSteer;
-                const float lkaCommand = lka.step(cfg::kCycleTime, ego.lateral(), driverSteer.has_value());
+                const float lkaCommand = lka.step(cfg::kCycleTime, ego.lateral(), allowedSteer.has_value());
                 if (lka.state() == LkaState::Active) {
                     lkaSteer = lkaCommand;
                 }
-                ego.steer(arbitrateSteer(driverSteer, lkaSteer).rate);
+                ego.steer(arbitrateSteer(allowedSteer, lkaSteer).rate);
                 // Road surface: oil takes away grip (for the driver and LKA alike) and makes the car slide.
                 const GripEffect surface = oil.step(cfg::kCycleTime, ego);
                 if (surface.justHit) {
@@ -326,6 +364,15 @@ int main(int /*argc*/, char* /*argv*/[]) {
             case LkaState::Off:        lkaLamp.lamp = AssistLamp::Off;       break;
         }
         lkaLamp.level = 1.0f;
+
+        AssistView& bswLamp = hud.assists[3];   // amber = car in a blind spot, red = steering blocked
+        switch (bsw.state()) {
+            case BswState::Clear:       bswLamp.lamp = AssistLamp::Active;       break;
+            case BswState::Warning:     bswLamp.lamp = AssistLamp::Degraded;     break;
+            case BswState::Intervening: bswLamp.lamp = AssistLamp::Intervening;  break;
+            case BswState::Off:         bswLamp.lamp = AssistLamp::Off;          break;
+        }
+        bswLamp.level = 1.0f;
         hud.wind = screen == Screen::Playing ? wind.current() : 0.0f;
 
         // --- Render: back to front ---
@@ -358,10 +405,19 @@ int main(int /*argc*/, char* /*argv*/[]) {
             const float egoX = (ego.lateral() + 0.5f) * cfg::kLaneWidth;
             gfx.drawCar(egoX, layout::kEgoScreenY, CarSkin::Blue);
 
-            // Debug view of what the sensors detect: 
-            //       - a line from the ego's nose to the lead car, with gap and relative speed.
-            if (showSensorDebug) {
-                if (const std::optional<Lead> lead = findLead(ego, traffic)) {
+            // Debug view of what the sensors detect: each radar's zone, a bracket on every object it
+            // reports, and the lead ACC/AEB use (line with gap and relative speed).
+            if (showSensorDebug && screen == Screen::Playing) {
+                for (std::size_t s = 0; s < sensors.size(); ++s) {
+                    const DetectionZone& zone = sensors[s]->fieldOfView();
+                    const SDL_Color c = s == kFrontRadar ? SDL_Color{60, 230, 140, 255} : SDL_Color{255, 176, 32, 255};
+                    gfx.drawSensorZone(egoX, zone.minLongitudinal, zone.maxLongitudinal, zone.minLateral, zone.maxLateral, c);
+                    for (const DetectedObject& o : sensors[s]->objects()) {
+                        gfx.drawDetection(egoX + o.lateral * cfg::kLaneWidth,
+                                          layout::kEgoScreenY - o.longitudinal * layout::kPixelsPerMeter, c);
+                    }
+                }
+                if (const std::optional<Lead> lead = selectLead(sensors[kFrontRadar]->objects())) {
                     gfx.drawLeadMarker(egoX, lead->gap, lead->relativeSpeed);
                 }
                 if (lka.state() == LkaState::Active) {
@@ -371,6 +427,11 @@ int main(int /*argc*/, char* /*argv*/[]) {
 
             if (screen == Screen::Playing) {
                 gfx.drawWind(wind.current(), scroll);
+            }
+
+            if (screen == Screen::Playing && bsw.state() != BswState::Off) {
+                gfx.drawBlindSpotWarning(egoX, bsw.leftOccupied(), bsw.rightOccupied(),
+                                         bsw.state() == BswState::Intervening);
             }
 
             if (screen == Screen::Playing && aeb.stage() != AebStage::Inactive) {

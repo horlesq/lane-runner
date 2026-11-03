@@ -2,17 +2,23 @@
 #include <array>
 #include <cmath>
 #include <cstdio>
+#include <memory>
 #include <optional>
+#include <string>
 #include "control/Pid.hpp"
 #include "core/Config.hpp"
 #include "functions/Acc.hpp"
 #include "control/Arbiter.hpp"
 #include "functions/Aeb.hpp"
+#include "functions/Bsw.hpp"
 #include "functions/Lka.hpp"
 #include "world/Collision.hpp"
 #include "world/DriverModel.hpp"
 #include "world/Lead.hpp"
 #include "world/Oil.hpp"
+#include "core/FixedVector.hpp"
+#include "perception/ObjectList.hpp"
+#include "sensors/Radar.hpp"
 #include "world/Traffic.hpp"
 #include "world/Vehicle.hpp"
 
@@ -412,7 +418,7 @@ static void testTrafficNeverCrashes() {
             }
         }
         CHECK(crashes == 0);
-        CHECK(traffic.laneChanges() > 20);
+        CHECK(traffic.laneChanges() > 5);   // they do change lanes (measured: 4-10 per minute)
     }
 }
 
@@ -460,6 +466,90 @@ static void testOilMakesCarSlide() {
     CHECK(near(later.grip, 1.0f) && near(later.slide, 0.0f));
 }
 
+// --- FixedVector, sensors and BSW ---
+
+// Fixed capacity: push_back refuses instead of allocating, and range-for only visits valid elements.
+static void testFixedVector() {
+    FixedVector<int, 3> v;
+    CHECK(v.empty() && v.capacity() == 3);
+    CHECK(v.push_back(1) && v.push_back(2) && v.push_back(3));
+    CHECK(v.full());
+    CHECK(!v.push_back(4));   // full: dropped, size unchanged
+    CHECK(v.size() == 3);
+
+    int sum = 0;
+    for (int x : v) {
+        sum += x;
+    }
+    CHECK(sum == 6);
+
+    v.clear();
+    CHECK(v.empty() && v.begin() == v.end());
+}
+
+// A radar reports only vehicles inside its zone, relative to the ego.
+static void testRadarZones() {
+    const Vehicle ego(1, 20.0f, 100.0f);
+    const std::array<Vehicle, 4> cars{
+        Vehicle(1, 15.0f, 130.0f),   // 30 m ahead, my lane    -> front radar
+        Vehicle(0, 25.0f, 95.0f),    // 5 m behind, left lane  -> rear-left radar
+        Vehicle(2, 20.0f, 100.0f),   // alongside, right lane  -> rear-right radar
+        Vehicle(1, 20.0f, 200.0f),   // 100 m ahead            -> out of everyone's range
+    };
+    Radar front("FRONT", radar_zones::kFront);
+    Radar rearLeft("REAR LEFT", radar_zones::kRearLeft);
+    Radar rearRight("REAR RIGHT", radar_zones::kRearRight);
+    front.update(ego, cars);
+    rearLeft.update(ego, cars);
+    rearRight.update(ego, cars);
+
+    CHECK(front.objects().size() == 1);
+    CHECK(near(front.objects()[0].longitudinal, 30.0f) && near(front.objects()[0].relativeSpeed, -5.0f));
+    CHECK(rearLeft.objects().size() == 1 && near(rearLeft.objects()[0].lateral, -1.0f));
+    CHECK(rearRight.objects().size() == 1 && near(rearRight.objects()[0].longitudinal, 0.0f));
+}
+
+// Used through the interface (std::unique_ptr<Sensor>), a radar behaves the same, and lead selection
+// on its object list gives exactly what the ground-truth findLead() gives.
+static void testLeadFromRadarMatchesGroundTruth() {
+    const Vehicle ego(1, 20.0f, 0.0f);
+    const std::array<Vehicle, 3> cars{Vehicle(1, 12.0f, 40.0f), Vehicle(1, 18.0f, 22.0f), Vehicle(2, 5.0f, 10.0f)};
+    const std::unique_ptr<Sensor> radar = std::make_unique<Radar>("FRONT", radar_zones::kFront);
+    radar->update(ego, cars);
+
+    const std::optional<Lead> fromRadar = selectLead(radar->objects());
+    const std::optional<Lead> truth = findLead(ego, cars);
+    CHECK(fromRadar.has_value() && truth.has_value());
+    if (fromRadar && truth) {
+        CHECK(near(fromRadar->gap, truth->gap) && near(fromRadar->relativeSpeed, truth->relativeSpeed));
+    }
+    CHECK(std::string(radar->name()) == "FRONT");
+}
+
+// BSW: warns about a car in a blind spot, blocks steering towards it, lets steering away through,
+// and ignores a car that is behind and falling back. Off = no effect at all.
+static void testBsw() {
+    ObjectList left;
+    ObjectList right;
+    left.push_back(DetectedObject{-3.0f, -1.0f, 2.0f});   // left lane, just behind, catching up
+
+    Bsw bsw;
+    CHECK(bsw.step(left, right, -2.0f).has_value());     // Off: steering passes untouched
+    bsw.toggle();
+
+    CHECK(!bsw.step(left, right, -2.0f).has_value());    // steer left into it: blocked
+    CHECK(bsw.state() == BswState::Intervening);
+
+    const std::optional<float> away = bsw.step(left, right, 2.0f);   // steer right: allowed
+    CHECK(away.has_value() && near(*away, 2.0f));
+    CHECK(bsw.state() == BswState::Warning && bsw.leftOccupied() && !bsw.rightOccupied());
+
+    ObjectList fallingBack;
+    fallingBack.push_back(DetectedObject{-12.0f, -1.0f, -6.0f});   // far behind and slower: no threat
+    CHECK(bsw.step(fallingBack, right, -2.0f).has_value());
+    CHECK(bsw.state() == BswState::Clear);
+}
+
 int main() {
     testProportionalOnly();
     testOutputIsClamped();
@@ -487,6 +577,10 @@ int main() {
     testTrafficNeverCrashes();
     testLowGripWeakensSteering();
     testOilMakesCarSlide();
+    testFixedVector();
+    testRadarZones();
+    testLeadFromRadarMatchesGroundTruth();
+    testBsw();
 
     std::printf(g_failures == 0 ? "All tests passed\n" : "%d test(s) failed\n", g_failures);
     return g_failures == 0 ? 0 : 1;

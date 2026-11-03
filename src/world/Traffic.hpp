@@ -74,6 +74,10 @@ private:
     static constexpr float kBesideMargin = 2.0f;   // m of extra room needed next to me to move over
     static constexpr float kMatchSpeedRange = 60.0f;   // m; a new car adopts the speed of a car this close ahead
     static constexpr float kSpawnBrakeCheck = 3.0f;    // m/s^2; spawn gaps must allow a calm stop, not an emergency one
+    static constexpr float kFasterFromBehindChance = 0.85f;   // a driver faster than the player usually comes from behind
+    static constexpr float kRubberBandChance = 0.35f;         // some slower ones too, sped up to overtake
+    static constexpr float kMinSpeedForOvertakers = 2.0f;     // m/s; a stopped player gets no overtakers
+    static constexpr float kMaxNpcSpeed = 46.0f;           // m/s, 165 km/h
 
     // Another road user found in a lane, with what is needed to predict its reaction.
     struct Other {
@@ -237,11 +241,11 @@ private:
         const bool pickup = variant / kColours == kPickupModel;
         const bool aggressive = !pickup && std::bernoulli_distribution(0.15)(rng_);
         if (pickup) {
-            d.profile = {uniform(11.0f, 15.0f), uniform(1.6f, 2.2f), 0.5f, 2.0f};   // slow and careful
+            d.profile = {uniform(14.0f, 19.0f), uniform(1.6f, 2.2f), 0.5f, 2.0f};   // slow and careful: 50-68 km/h
         } else if (aggressive) {
-            d.profile = {uniform(22.0f, 28.0f), uniform(0.8f, 1.0f), 0.0f, 6.0f};   // fast, tailgates, cuts in
+            d.profile = {uniform(30.0f, 38.0f), uniform(0.8f, 1.0f), 0.0f, 6.0f};   // fast, tailgates, cuts in: 108-137 km/h
         } else {
-            d.profile = {uniform(14.0f, 22.0f), uniform(1.2f, 1.8f), 0.3f, 3.0f};
+            d.profile = {uniform(20.0f, 30.0f), uniform(1.2f, 1.8f), 0.3f, 3.0f};   // 72-108 km/h
         }
         d.cooldown = uniform(1.0f, 4.0f);
         return d;
@@ -249,13 +253,33 @@ private:
 
     void respawn(std::size_t i, const Vehicle& ego) {
         const int variant = std::uniform_int_distribution<int>(0, kVariantCount - 1)(rng_);
-        const DriverState fresh = makeDriver(variant);
+        DriverState fresh = makeDriver(variant);
 
-        // Fast drivers sometimes come up from behind (out of view), the rest appear ahead.
-        const bool fromBehind = fresh.profile.desiredSpeed > ego.speed() + 4.0f && std::bernoulli_distribution(0.35)(rng_);
-        const float position = fromBehind ? ego.position() - std::uniform_real_distribution<float>(20.0f, 28.0f)(rng_)
+        // Where a new car appears depends on who is faster:
+        //  - faster than the player: ahead it would only drive away, so it usually comes from behind and overtakes,
+        //  - slower: it appears ahead and the player catches up.
+        // So that cars still overtake a player near top speed, some slower drivers are also sent from behind
+        // and then made 7-11 m/s faster than the player is going right now (game-design "rubber banding").
+        // Slow pickups never come from behind.
+        const bool pickup = variant / kColours == kPickupModel;
+        const bool fasterThanPlayer = fresh.profile.desiredSpeed > ego.speed() + 3.0f;
+        const float behindChance = fasterThanPlayer ? kFasterFromBehindChance : kRubberBandChance;
+        const bool fromBehind = !pickup && ego.speed() > kMinSpeedForOvertakers && std::bernoulli_distribution(behindChance)(rng_);
+        if (fromBehind && !fasterThanPlayer) {
+            const float faster = ego.speed() + std::uniform_real_distribution<float>(7.0f, 11.0f)(rng_);
+            fresh.profile.desiredSpeed = std::max(fresh.profile.desiredSpeed, std::min(faster, kMaxNpcSpeed));
+        }
+        const float position = fromBehind ? ego.position() - std::uniform_real_distribution<float>(20.0f, 26.0f)(rng_)
                                           : ego.position() + std::uniform_real_distribution<float>(35.0f, 50.0f)(rng_);
-        const int lane = std::uniform_int_distribution<int>(0, cfg::kLaneCount - 1)(rng_);
+        // Most overtakers come up in a lane next to the player (the blind spot), the rest anywhere.
+        int lane = std::uniform_int_distribution<int>(0, cfg::kLaneCount - 1)(rng_);
+        if (fromBehind && std::bernoulli_distribution(0.7)(rng_)) {
+            const int side = std::bernoulli_distribution(0.5)(rng_) ? -1 : 1;
+            lane = ego.lane() + side;
+            if (lane < 0 || lane >= cfg::kLaneCount) {
+                lane = ego.lane() - side;
+            }
+        }
 
         // Merge in at the speed of the car ahead in that lane, like real traffic: a new car must not
         // appear doing 28 m/s right behind a queue at 12 m/s.

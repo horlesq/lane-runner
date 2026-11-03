@@ -256,7 +256,7 @@ void Renderer2D::drawPanel(const HudView& hud) {
         font::drawText(r_, arrows, right - font::textWidth(arrows, 2), 410, 2, color::kDegraded);
     }
 
-    font::drawText(r_, "A: ACC   L: LKA", left, cfg::kScreenHeight - 30, 1, color::kLocked);
+    font::drawText(r_, "A: ACC  L: LKA  B: BSW", left, cfg::kScreenHeight - 30, 1, color::kLocked);
     font::drawText(r_, "TAB: DEBUG  ESC: MENU", left, cfg::kScreenHeight - 18, 1, color::kLocked);
 }
 
@@ -378,6 +378,64 @@ void Renderer2D::drawWind(float wind, float scrollPx) {
         SDL_RenderGeometry(r_, nullptr, v, 4, indices, 6);
         segment(at(-halfLen - 2.0f, 0), at(halfLen - 1.0f, 0), 1.2f, 1.2f, kMidrib, kMidrib);   // midrib and stem
     }
+}
+
+void Renderer2D::drawBlindSpotWarning(float egoX, bool left, bool right, bool intervening) {
+    if (intervening && !blink(250)) {
+        return;
+    }
+    const SDL_Color lamp = intervening ? color::kCrash : color::kDegraded;
+    const int x = layout::kRoadX + static_cast<int>(egoX);
+    const int y = static_cast<int>(layout::kEgoScreenY) - 26;   // about where the mirrors are
+    const auto badge = [&](int cx, int side) {
+        // Rounded amber/red badge with a dark car pictogram and a "wave" towards the occupied side.
+        fillRect(cx - 7, y - 9, 14, 18, color::kDim);
+        fillRect(cx - 6, y - 8, 12, 16, lamp);
+        fillRect(cx - 7, y - 7, 1, 14, lamp);
+        fillRect(cx + 6, y - 7, 1, 14, lamp);
+        fillRect(cx - 2, y - 5, 4, 9, color::kPanel);          // car body
+        fillRect(cx - 3, y - 3, 6, 2, color::kPanel);          // wheels
+        fillRect(cx - 3, y + 1, 6, 2, color::kPanel);
+        fillRect(cx + side * 9, y - 4, 2, 8, lamp);            // signal wave
+        fillRect(cx + side * 12, y - 6, 2, 12, lamp);
+    };
+    if (left) {
+        badge(x - 40, -1);
+    }
+    if (right) {
+        badge(x + 40, 1);
+    }
+}
+
+void Renderer2D::drawSensorZone(float egoX, float minLong, float maxLong, float minLat, float maxLat, SDL_Color c) {
+    const float ppm = layout::kPixelsPerMeter;
+    const int left = layout::kRoadX + static_cast<int>(egoX + minLat * static_cast<float>(cfg::kLaneWidth));
+    const int right = layout::kRoadX + static_cast<int>(egoX + maxLat * static_cast<float>(cfg::kLaneWidth));
+    const int top = std::max(0, static_cast<int>(layout::kEgoScreenY - maxLong * ppm));
+    const int bottom = std::min(cfg::kScreenHeight, static_cast<int>(layout::kEgoScreenY - minLong * ppm));
+    if (bottom <= top || right <= left) {
+        return;
+    }
+    fillRect(left, top, right - left, bottom - top, SDL_Color{c.r, c.g, c.b, 28});
+    const SDL_Color edge{c.r, c.g, c.b, 110};
+    fillRect(left, top, 1, bottom - top, edge);
+    fillRect(right - 1, top, 1, bottom - top, edge);
+    fillRect(left, top, right - left, 1, edge);
+    fillRect(left, bottom - 1, right - left, 1, edge);
+}
+
+void Renderer2D::drawDetection(float centerX, float centerY, SDL_Color c) {
+    // Corner brackets, like a perception debug view (and the cover art).
+    const int x0 = layout::kRoadX + static_cast<int>(centerX) - 31;
+    const int y0 = static_cast<int>(centerY) - 50;
+    const int x1 = x0 + 62;
+    const int y1 = y0 + 100;
+    constexpr int k = 10;
+    constexpr int t = 2;
+    fillRect(x0, y0, k, t, c);          fillRect(x0, y0, t, k, c);
+    fillRect(x1 - k, y0, k, t, c);      fillRect(x1 - t, y0, t, k, c);
+    fillRect(x0, y1 - t, k, t, c);      fillRect(x0, y1 - k, t, k, c);
+    fillRect(x1 - k, y1 - t, k, t, c);  fillRect(x1 - t, y1 - k, t, k, c);
 }
 
 void Renderer2D::drawLaneTarget(float centerX) {

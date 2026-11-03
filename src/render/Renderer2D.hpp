@@ -42,6 +42,15 @@ public:
     // egoX is road-relative like drawCar; gap in m (bumper to bumper), relativeSpeed in m/s.
     void drawLeadMarker(float egoX, float gap, float relativeSpeed);
 
+    // BSW: warning lights beside the ego, like the lamps in a real car's side mirrors.
+    // Amber = car in that blind spot; red and flashing = BSW is blocking a steer towards it.
+    void drawBlindSpotWarning(float egoX, bool left, bool right, bool intervening);
+
+    // Sensor debug view. Zone in metres (+ = ahead) and lanes (+ = right) relative to the ego;
+    // a detection is drawn as corner brackets around the car's position on screen.
+    void drawSensorZone(float egoX, float minLong, float maxLong, float minLat, float maxLat, SDL_Color color);
+    void drawDetection(float centerX, float centerY, SDL_Color color);
+
     // LKA debug view: the lane centre it steers towards (road-relative x).
     void drawLaneTarget(float centerX);
 
