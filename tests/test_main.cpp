@@ -5,6 +5,7 @@
 #include <optional>
 #include "control/Pid.hpp"
 #include "core/Config.hpp"
+#include "functions/Acc.hpp"
 #include "world/Lead.hpp"
 #include "world/Vehicle.hpp"
 
@@ -125,6 +126,61 @@ static void testCutInIsDetected() {
     CHECK(findLead(ego, cars).has_value());    // lateral 1.36: 0.36 lanes away, overlapping -> lead
 }
 
+// --- ACC ---
+
+// The state machine: A key toggles, the driver's brake cancels to Standby, A resumes the old set speed.
+static void testAccStateMachine() {
+    Acc acc;
+    CHECK(acc.state() == AccState::Off);
+
+    acc.cancel();                               // braking while Off changes nothing
+    CHECK(acc.state() == AccState::Off);
+
+    acc.toggle(20.0f);                          // switch on: set speed = current speed
+    CHECK(acc.state() == AccState::Active);
+    CHECK(near(acc.setSpeed(), 20.0f));
+
+    acc.cancel();                               // driver brakes
+    CHECK(acc.state() == AccState::Standby);
+
+    acc.toggle(12.0f);                          // resume: back to Active, keeps the OLD set speed
+    CHECK(acc.state() == AccState::Active);
+    CHECK(near(acc.setSpeed(), 20.0f));
+
+    acc.toggle(12.0f);                          // switch off
+    CHECK(acc.state() == AccState::Off);
+}
+
+// When ACC is not Active it must never command anything, even with a car right ahead.
+static void testAccInactiveCommandsNothing() {
+    Acc acc;
+    const std::optional<Lead> lead = Lead{3.0f, -10.0f};   // very close and closing fast
+    CHECK(near(acc.step(0.02f, 20.0f, lead), 0.0f));
+}
+
+// Closed loop: ACC set at 20 m/s follows a 15 m/s car. It must slow to 15 m/s, settle at the
+// desired gap (2 m + 0.5 s x 15 m/s = 9.5 m) and never touch the car on the way.
+static void testAccFollowsSlowerCar() {
+    Vehicle ego(1, 20.0f, 0.0f);
+    std::array<Vehicle, 1> cars{};
+    cars[0].reset(1, 15.0f, 40.0f, 0);   // 40 m ahead (centre to centre), 15 m/s
+    Acc acc;
+    acc.toggle(ego.speed());
+
+    float minGap = 1000.0f;
+    for (int i = 0; i < 2000; ++i) {   // 40 s
+        ego.setAcceleration(acc.step(0.02f, ego.speed(), findLead(ego, cars)));
+        ego.step(0.02f);
+        cars[0].step(0.02f);
+        minGap = std::min(minGap, cars[0].position() - ego.position() - cfg::kCarLength);
+    }
+    const float gap = cars[0].position() - ego.position() - cfg::kCarLength;
+
+    CHECK(near(ego.speed(), 15.0f, 0.2f));
+    CHECK(near(gap, 9.5f, 1.5f));
+    CHECK(minGap > 5.0f);
+}
+
 int main() {
     testProportionalOnly();
     testOutputIsClamped();
@@ -133,6 +189,9 @@ int main() {
     testNoLead();
     testNearestLeadWins();
     testCutInIsDetected();
+    testAccStateMachine();
+    testAccInactiveCommandsNothing();
+    testAccFollowsSlowerCar();
 
     std::printf(g_failures == 0 ? "All tests passed\n" : "%d test(s) failed\n", g_failures);
     return g_failures == 0 ? 0 : 1;
