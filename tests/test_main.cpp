@@ -1,7 +1,12 @@
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
+#include <optional>
 #include "control/Pid.hpp"
+#include "core/Config.hpp"
+#include "world/Lead.hpp"
+#include "world/Vehicle.hpp"
 
 static int g_failures = 0;
 
@@ -57,10 +62,77 @@ static void testNoOvershoot() {
     CHECK(near(speed, kTarget, 0.5f));   // and after 30 s it has settled near the target
 }
 
+// --- findLead: which car ahead does ACC follow? ---
+// Each test places cars by hand (lane, speed m/s, position m) around an ego in lane 1 at 0 m, 20 m/s.
+
+// One car 20 m ahead in my lane: it is the lead. The gap is bumper to bumper, so the car
+// length is subtracted, and the relative speed is negative because I'm faster (closing in).
+static void testLeadInMyLane() {
+    const Vehicle ego(1, 20.0f, 0.0f);
+    const std::array<Vehicle, 1> cars{Vehicle(1, 15.0f, 20.0f)};
+
+    const std::optional<Lead> lead = findLead(ego, cars);
+    CHECK(lead.has_value());
+    if (lead) {   // never dereference an empty optional, even in a test
+        CHECK(near(lead->gap, 20.0f - cfg::kCarLength));
+        CHECK(near(lead->relativeSpeed, 15.0f - 20.0f));
+    }
+}
+
+// Cars that ACC must ignore: next lane, behind me, beyond sensor range. Result: no lead at all.
+static void testNoLead() {
+    const Vehicle ego(1, 20.0f, 0.0f);
+    const std::array<Vehicle, 3> cars{
+        Vehicle(2, 15.0f, 20.0f),                        // next lane
+        Vehicle(1, 15.0f, -15.0f),                       // same lane, but behind
+        Vehicle(1, 15.0f, cfg::kSensorRange + 10.0f),    // same lane, too far to detect
+    };
+
+    CHECK(!findLead(ego, cars).has_value());
+}
+
+// Two cars in my lane: ACC must follow the NEAREST one, whatever order they are stored in.
+static void testNearestLeadWins() {
+    const Vehicle ego(1, 20.0f, 0.0f);
+    const std::array<Vehicle, 2> cars{Vehicle(1, 18.0f, 40.0f), Vehicle(1, 12.0f, 25.0f)};
+
+    const std::optional<Lead> lead = findLead(ego, cars);
+    CHECK(lead.has_value());
+    if (lead) {
+        CHECK(near(lead->gap, 25.0f - cfg::kCarLength));
+        CHECK(near(lead->relativeSpeed, 12.0f - 20.0f));
+    }
+}
+
+// A car cutting in from the next lane becomes the lead as soon as it overlaps me sideways,
+// before it has fully arrived in my lane. This is why findLead uses lateral(), not lane().
+static void testCutInIsDetected() {
+    const Vehicle ego(1, 20.0f, 0.0f);
+    std::array<Vehicle, 1> cars{Vehicle(2, 15.0f, 20.0f)};
+
+    CHECK(!findLead(ego, cars).has_value());   // still fully in lane 2: not my lead
+
+    // It moves 0.08 lanes per 20 ms cycle. It counts once it is closer than kCarWidthLanes (0.45) to me.
+    cars[0].changeLane(-1);
+    for (int i = 0; i < 4; ++i) {
+        cars[0].step(0.02f);
+    }
+    CHECK(!findLead(ego, cars).has_value());   // lateral 1.68: 0.68 lanes away, not overlapping yet
+
+    for (int i = 0; i < 4; ++i) {
+        cars[0].step(0.02f);
+    }
+    CHECK(findLead(ego, cars).has_value());    // lateral 1.36: 0.36 lanes away, overlapping -> lead
+}
+
 int main() {
     testProportionalOnly();
     testOutputIsClamped();
     testNoOvershoot();
+    testLeadInMyLane();
+    testNoLead();
+    testNearestLeadWins();
+    testCutInIsDetected();
 
     std::printf(g_failures == 0 ? "All tests passed\n" : "%d test(s) failed\n", g_failures);
     return g_failures == 0 ? 0 : 1;

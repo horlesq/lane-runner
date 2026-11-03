@@ -17,6 +17,8 @@ namespace cfg {
     constexpr float kDespawnBehind = 10.0f;  // NPC this far behind the ego is recycled
     constexpr float kDespawnAhead = 60.0f;   // NPC this far ahead of the ego is recycled
 
+    constexpr float kSensorRange = 60.0f;   // metres; cars farther ahead are not detected
+
 
     static_assert(kRoadWidth <= kScreenWidth, "Road does not fit on screen");
 

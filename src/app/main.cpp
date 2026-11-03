@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
+#include <optional>
 #include <string>
 #include <SDL_image.h>
 #include "audio/Audio.hpp"
@@ -12,8 +13,10 @@
 #include "render/Layout.hpp"
 #include "render/Renderer2D.hpp"
 #include "world/Collision.hpp"
+#include "world/Lead.hpp"
 #include "world/Traffic.hpp"
 #include "world/Vehicle.hpp"
+#include "functions/Acc.hpp"
 
 // ASSET_DIR is injected by CMake; wrap the macro in a typed constant once and use that.
 constexpr const char* kAssetDir = ASSET_DIR;
@@ -80,15 +83,14 @@ int main(int /*argc*/, char* /*argv*/[]) {
     Screen screen = Screen::Menu;
     Vehicle ego(1, kMenuSpeed);
     Traffic traffic;
+    Acc acc;   // adaptive cruise control
     MenuView menu;
     HudView hud;
     int best = 0;
     int lastScore = 0;
     bool newBest = false;
 
-    hud.assists[0].lamp = AssistLamp::Active;   // placeholder until the ADAS functions exist
-    hud.assists[0].level = 0.7f;
-    hud.assists[1].lamp = AssistLamp::Off;
+    bool showSensorDebug = true;   // Tab: engineer's view of what the sensors detect
 
     const auto scoreOf = [](const Vehicle& v) {
         return static_cast<int>(v.position() * layout::kPixelsPerMeter / 10.0f);
@@ -97,6 +99,7 @@ int main(int /*argc*/, char* /*argv*/[]) {
     const auto startRun = [&]() {
         ego = Vehicle(1, kStartSpeed);
         traffic = Traffic();
+        acc = Acc();
         screen = Screen::Playing;
         audio.play(Sfx::Start);
     };
@@ -104,6 +107,7 @@ int main(int /*argc*/, char* /*argv*/[]) {
     const auto backToMenu = [&]() {
         ego = Vehicle(1, kMenuSpeed);
         traffic = Traffic();
+        acc = Acc();
         menu.best = best;
         screen = Screen::Menu;
     };
@@ -157,6 +161,10 @@ int main(int /*argc*/, char* /*argv*/[]) {
                         ego.changeLane(+1);
                     } else if (key == SDLK_ESCAPE) {
                         backToMenu();
+                    } else if (key == SDLK_TAB) {
+                        showSensorDebug = !showSensorDebug;
+                    } else if (key == SDLK_a) {
+                        acc.toggle(ego.speed());
                     }
                     if (ego.lane() != laneBefore) {
                         audio.play(Sfx::LaneChange);   // no whoosh when already at the road edge
@@ -188,11 +196,15 @@ int main(int /*argc*/, char* /*argv*/[]) {
         while (accumulator >= cfg::kCycleTime) {
             if (screen == Screen::Playing) {
                 // Held keys act every cycle, so they are read as state rather than events.
+                // Priority: driver brake > driver throttle > ACC > coasting.
                 const Uint8* keys = SDL_GetKeyboardState(nullptr);
-                if (keys[SDL_SCANCODE_UP]) {
-                    ego.setAcceleration(4.0f);
-                } else if (keys[SDL_SCANCODE_DOWN]) {
+                if (keys[SDL_SCANCODE_DOWN]) {
+                    acc.cancel();                 // the driver's brake always wins and cancels ACC
                     ego.setAcceleration(-8.0f);
+                } else if (keys[SDL_SCANCODE_UP]) {
+                    ego.setAcceleration(4.0f);    // overrides ACC while held, without cancelling it
+                } else if (acc.state() == AccState::Active) {
+                    ego.setAcceleration(acc.step(cfg::kCycleTime, ego.speed(), findLead(ego, traffic)));
                 } else {
                     ego.setAcceleration(-0.5f);   // rolling resistance
                 }
@@ -228,6 +240,14 @@ int main(int /*argc*/, char* /*argv*/[]) {
         hud.best = best;
         hud.speedKmh = static_cast<int>(ego.speed() * 3.6f);   // m/s -> km/h
 
+        AssistView& accLamp = hud.assists[0];
+        switch (acc.state()) {
+            case AccState::Active:  accLamp.lamp = AssistLamp::Active;    break;
+            case AccState::Standby: accLamp.lamp = AssistLamp::Degraded;  break;   // on, waiting to resume
+            case AccState::Off:     accLamp.lamp = AssistLamp::Off;       break;
+        }
+        accLamp.level = 1.0f;
+
         // --- Render: back to front ---
         gfx.drawRoad(scroll);
 
@@ -246,6 +266,15 @@ int main(int /*argc*/, char* /*argv*/[]) {
         } else {
             const float egoX = (ego.lateral() + 0.5f) * cfg::kLaneWidth;
             gfx.drawCar(egoX, layout::kEgoScreenY, CarSkin::Blue);
+
+            // Debug view of what the sensors detect: 
+            //       - a line from the ego's nose to the lead car, with gap and relative speed.
+            if (showSensorDebug) {
+                if (const std::optional<Lead> lead = findLead(ego, traffic)) {
+                    gfx.drawLeadMarker(egoX, lead->gap, lead->relativeSpeed);
+                }
+            }
+
             gfx.drawPanel(hud);
         }
         if (screen == Screen::GameOver) {

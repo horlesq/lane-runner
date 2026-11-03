@@ -31,6 +31,10 @@ public:
     void drawCar(float centerX, float centerY, CarSkin skin, std::size_t model = 0);
     void drawPanel(const HudView& hud);
 
+    // Sensor debug view: line from the ego's nose to the detected lead car, with gap and relative speed.
+    // egoX is road-relative like drawCar; gap in m (bumper to bumper), relativeSpeed in m/s.
+    void drawLeadMarker(float egoX, float gap, float relativeSpeed);
+
     // Full-screen overlays, drawn on top of the road and cars.
     void drawMenu(const MenuView& menu);
     void drawGameOver(int score, int best, bool newBest);

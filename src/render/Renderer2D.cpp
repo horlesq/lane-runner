@@ -1,4 +1,5 @@
 #include "render/Renderer2D.hpp"
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -220,7 +221,42 @@ void Renderer2D::drawPanel(const HudView& hud) {
     font::drawText(r_, camera, right - font::textWidth(camera, 2), 386, 2,
                    hud.cameraOk ? color::kActive : color::kDegraded);
 
-    font::drawText(r_, "ESC: MENU", left, cfg::kScreenHeight - 18, 1, color::kLocked);
+    font::drawText(r_, "TAB: DEBUG  ESC: MENU", left, cfg::kScreenHeight - 18, 1, color::kLocked);
+}
+
+void Renderer2D::drawLeadMarker(float egoX, float gap, float relativeSpeed) {
+    // Positions are car centres; the sprite's half length turns them into nose and tail on screen.
+    const float halfCar = static_cast<float>(layout::kCarHeight) / 2.0f;
+    const float centreDistance = gap + cfg::kCarLength;
+    const int x = layout::kRoadX + static_cast<int>(egoX);
+    const int noseY = static_cast<int>(layout::kEgoScreenY - halfCar);
+    const int tailY = static_cast<int>(layout::kEgoScreenY - centreDistance * layout::kPixelsPerMeter + halfCar);
+    if (tailY >= noseY) {
+        return;   // overlapping: nothing to draw between the cars
+    }
+
+    const bool closing = relativeSpeed < 0.0f;
+    const SDL_Color c = closing ? color::kDegraded : color::kActive;
+
+    // Dashed range line with end ticks, like a radar debug view.
+    for (int y = noseY; y > tailY; y -= 10) {
+        fillRect(x - 1, std::max(tailY, y - 6), 2, std::min(6, y - tailY), c);
+    }
+    fillRect(x - 10, tailY, 20, 2, c);
+    fillRect(x - 6, noseY - 2, 12, 2, c);
+
+    // Label next to the middle of the line.
+    char gapText[16];
+    char speedText[16];
+    std::snprintf(gapText, sizeof gapText, "%.1fM", static_cast<double>(gap));
+    std::snprintf(speedText, sizeof speedText, "%+.1f M/S", static_cast<double>(relativeSpeed));
+    const int labelW = std::max(font::textWidth(gapText, 1), font::textWidth(speedText, 1)) + 8;
+    const int labelX = x + 8;
+    const int labelY = (noseY + tailY) / 2 - 10;
+    fillRect(labelX, labelY, labelW, 21, color::kDim);
+    fillRect(labelX, labelY, 2, 21, c);
+    font::drawText(r_, gapText, labelX + 5, labelY + 3, 1, color::kText);
+    font::drawText(r_, speedText, labelX + 5, labelY + 12, 1, c);
 }
 
 void Renderer2D::drawMenu(const MenuView& menu) {
