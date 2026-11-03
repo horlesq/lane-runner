@@ -6,6 +6,7 @@
 #include "control/Pid.hpp"
 #include "core/Config.hpp"
 #include "functions/Acc.hpp"
+#include "functions/Aeb.hpp"
 #include "world/Lead.hpp"
 #include "world/Vehicle.hpp"
 
@@ -181,6 +182,43 @@ static void testAccFollowsSlowerCar() {
     CHECK(minGap > 5.0f);
 }
 
+// --- AEB ---
+
+// TTC = gap / closing speed; no TTC when the gap isn't shrinking.
+static void testTimeToCollision() {
+    const std::optional<float> ttc = timeToCollision(Lead{10.0f, -5.0f});   // 10 m, closing at 5 m/s
+    CHECK(ttc.has_value() && near(*ttc, 2.0f));
+    CHECK(!timeToCollision(Lead{10.0f, 0.0f}).has_value());    // same speed
+    CHECK(!timeToCollision(Lead{10.0f, 3.0f}).has_value());    // lead pulling away
+}
+
+// Each TTC band maps to its stage; only the two braking stages command a deceleration.
+static void testAebStages() {
+    Aeb aeb;
+    CHECK(!aeb.step(Lead{30.0f, -5.0f}).has_value() && aeb.stage() == AebStage::Inactive);   // TTC 6.0
+    CHECK(!aeb.step(Lead{10.0f, -5.0f}).has_value() && aeb.stage() == AebStage::Warning);    // TTC 2.0
+
+    const std::optional<float> partial = aeb.step(Lead{6.0f, -5.0f});                        // TTC 1.2
+    CHECK(aeb.stage() == AebStage::PartialBrake && partial.has_value() && near(*partial, -4.0f));
+
+    const std::optional<float> full = aeb.step(Lead{3.0f, -5.0f});                           // TTC 0.6
+    CHECK(aeb.stage() == AebStage::FullBrake && full.has_value() && near(*full, -9.0f));
+}
+
+// Latch: once braking, AEB never steps down while still closing in, only releases when the gap
+// stops shrinking. Without the latch it would pulse between -9 and -4 as braking raises the TTC.
+static void testAebLatch() {
+    Aeb aeb;
+    aeb.step(Lead{3.0f, -5.0f});                          // TTC 0.6 -> FullBrake
+    aeb.step(Lead{5.0f, -5.0f});                          // TTC 1.0 would be PartialBrake alone
+    CHECK(aeb.stage() == AebStage::FullBrake);
+    aeb.step(Lead{20.0f, -5.0f});                         // TTC 4.0 would be Inactive alone
+    CHECK(aeb.stage() == AebStage::FullBrake);
+
+    CHECK(!aeb.step(Lead{5.0f, 0.0f}).has_value());       // no longer closing in -> release
+    CHECK(aeb.stage() == AebStage::Inactive);
+}
+
 int main() {
     testProportionalOnly();
     testOutputIsClamped();
@@ -192,6 +230,9 @@ int main() {
     testAccStateMachine();
     testAccInactiveCommandsNothing();
     testAccFollowsSlowerCar();
+    testTimeToCollision();
+    testAebStages();
+    testAebLatch();
 
     std::printf(g_failures == 0 ? "All tests passed\n" : "%d test(s) failed\n", g_failures);
     return g_failures == 0 ? 0 : 1;
