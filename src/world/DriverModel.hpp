@@ -24,7 +24,7 @@ namespace driver {
 
     constexpr float kMaxAccel = 1.5f;       // m/s^2
     constexpr float kComfortDecel = 2.5f;   // m/s^2, the braking IDM aims for in normal traffic
-    constexpr float kMaxBrake = 9.0f;       // m/s^2, physical limit
+    constexpr float kMaxBrake = 8.0f;       // m/s^2, a hard emergency stop for an ordinary driver
     constexpr float kMinGap = 3.0f;         // m, gap kept even when standing still
 
     // IDM: acceleration for a car at `speed` with an optional leader.

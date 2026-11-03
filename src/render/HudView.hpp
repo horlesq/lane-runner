@@ -16,6 +16,7 @@ struct AssistView {
 
 struct HudView {
     int score = 0;
+    bool scorePenalty = false;   // flashes the score red (points were just taken off)
     int best = 0;
     int speedKmh = 0;
     std::array<AssistView, 5> assists{{

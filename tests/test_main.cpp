@@ -548,6 +548,97 @@ static void testBsw() {
     fallingBack.push_back(DetectedObject{-12.0f, -1.0f, -6.0f});   // far behind and slower: no threat
     CHECK(bsw.step(fallingBack, right, -2.0f).has_value());
     CHECK(bsw.state() == BswState::Clear);
+
+    // Lane change assist: far behind but closing fast (reaches me in about 2 s) is a threat too.
+    ObjectList fastFromBehind;
+    fastFromBehind.push_back(DetectedObject{-30.0f, -1.0f, 12.0f});
+    CHECK(!bsw.step(fastFromBehind, right, -2.0f).has_value());
+}
+
+// --- Cutting in front of a faster car ---
+
+struct CutInResult {
+    bool crashed = false;
+    bool blocked = false;   // BSW refused the lane change at least once
+    int cutOffs = 0;        // the other driver had to brake hard because of the player
+};
+
+// Player at 22 m/s in lane 1 steers into lane 2, where a car `faster` m/s quicker is `behind` metres back
+// (driver reaction time 1 s). Optionally the steering goes through BSW. 8 simulated seconds.
+static CutInResult cutIn(float behind, float faster, bool withBsw) {
+    Vehicle ego(1, 22.0f, 1000.0f);
+    ego.enableFreeSteering();
+    Traffic traffic;
+    driver::Profile cruise;
+    cruise.desiredSpeed = 22.0f;
+    for (std::size_t i = 1; i < Traffic::kMaxCars; ++i) {   // everyone else ahead in lane 3, out of the way
+        traffic.place(i, Vehicle(3, 22.0f, 1040.0f + 3.0f * static_cast<float>(i)), cruise, 1.0f);
+    }
+    driver::Profile fast;
+    fast.desiredSpeed = 22.0f + faster;
+    fast.timeHeadway = 1.2f;
+    traffic.place(0, Vehicle(2, 22.0f + faster, 1000.0f - behind), fast, 1.0f);
+
+    Radar rearLeft("REAR LEFT", radar_zones::kRearLeft);
+    Radar rearRight("REAR RIGHT", radar_zones::kRearRight);
+    Bsw bsw;
+    if (withBsw) {
+        bsw.toggle();
+    }
+    CutInResult r;
+    for (int step = 0; step < 50 * 8 && !r.crashed; ++step) {
+        rearLeft.update(ego, traffic.cars());
+        rearRight.update(ego, traffic.cars());
+        const std::optional<float> want = ego.lateral() < 2.0f ? std::optional<float>(2.0f) : std::nullopt;
+        const std::optional<float> allowed = bsw.step(rearLeft.objects(), rearRight.objects(), want);
+        r.blocked = r.blocked || (want && !allowed);
+        ego.steer(allowed ? *allowed : 0.0f);
+        ego.step(0.02f);
+        traffic.step(0.02f, ego);
+        r.cutOffs += traffic.takeCutOffs();
+        r.crashed = collides(ego, traffic.cars()[0]);
+    }
+    return r;
+}
+
+// Without BSW: pulling out 20 m in front of a car closing at 12 m/s ends in a rear-end crash, because its
+// driver needs a second to react. With a smaller speed difference it brakes hard in time and honks.
+static void testCutInWithoutBsw() {
+    CHECK(cutIn(20.0f, 12.0f, false).crashed);
+    const CutInResult closeCall = cutIn(20.0f, 6.0f, false);
+    CHECK(!closeCall.crashed && closeCall.cutOffs > 0);
+}
+
+// With BSW: the same dangerous lane changes are blocked until the fast car has passed, so no crash.
+static void testBswPreventsRearEnd() {
+    for (const float behind : {10.0f, 20.0f, 28.0f}) {
+        const CutInResult r = cutIn(behind, 12.0f, true);
+        CHECK(!r.crashed && r.blocked);
+    }
+}
+
+// A motorcycle is shorter and narrower: 0.40 lanes off a car's centre, another car still touches it
+// (car + car need more than 0.45 lanes) but a motorcycle doesn't (car + bike need only 0.325).
+static void testMotorcycleHitbox() {
+    const Vehicle car(1, 0.0f, 100.0f);
+    Vehicle otherCar;
+    otherCar.reset(2, 0.0f, 100.0f, 0, VehicleType::Car);
+    Vehicle bike;
+    bike.reset(2, 0.0f, 100.0f, 0, VehicleType::Motorcycle);
+    CHECK(bike.length() < car.length() && bike.width() < car.width());
+
+    // Standing still (speed 0), both drift from lane 2 towards lane 1 the same way until 0.40 lanes away.
+    otherCar.enableFreeSteering();
+    bike.enableFreeSteering();
+    otherCar.steer(-1.0f);
+    bike.steer(-1.0f);
+    for (int i = 0; i < 200 && otherCar.lateral() - car.lateral() > 0.40f; ++i) {
+        otherCar.step(0.02f);
+        bike.step(0.02f);
+    }
+    CHECK(near(otherCar.lateral(), bike.lateral()));
+    CHECK(collides(car, otherCar));
+    CHECK(!collides(car, bike));
 }
 
 int main() {
@@ -581,6 +672,9 @@ int main() {
     testRadarZones();
     testLeadFromRadarMatchesGroundTruth();
     testBsw();
+    testCutInWithoutBsw();
+    testBswPreventsRearEnd();
+    testMotorcycleHitbox();
 
     std::printf(g_failures == 0 ? "All tests passed\n" : "%d test(s) failed\n", g_failures);
     return g_failures == 0 ? 0 : 1;

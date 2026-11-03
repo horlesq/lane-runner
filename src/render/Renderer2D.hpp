@@ -29,7 +29,9 @@ public:
     void drawRoad(float scrollPx);
     // model must be < kCarModelCount. Shorter models keep their real proportions.
     // signal: turn indicator, -1 left, +1 right, 0 off (blinks amber on the front and rear corner).
-    void drawCar(float centerX, float centerY, CarSkin skin, std::size_t model = 0, int signal = 0);
+    // braking: red brake lights on the rear corners.
+    void drawCar(float centerX, float centerY, CarSkin skin, std::size_t model = 0, int signal = 0, bool braking = false);
+    void drawMotorcycle(float centerX, float centerY, CarSkin skin, int signal = 0, bool braking = false);
     void drawPanel(const HudView& hud);
 
     // Oil patch on the road (drawn under the cars). centerX road-relative, centerY screen pixels.
@@ -66,6 +68,7 @@ private:
     void drawTextCentered(const char* text, int centerX, int y, int scale, SDL_Color color);
     void drawSprite(SDL_Texture* tex, float centerX, float centerY, float w, float h, bool shadow);
     void fillRect(int x, int y, int w, int h, SDL_Color color);
+    void drawLamps(float x, float centerY, float halfWidth, float height, int signal, bool braking);
 
     SDL_Renderer* r_;   // not owned: main() owns the renderer and outlives this object
     struct CarSprite {
@@ -77,6 +80,8 @@ private:
     TexturePtr treeLarge_;
     TexturePtr rock_;
     TexturePtr oil_;
+    std::array<TexturePtr, kCarSkinCount> motorcycles_;
+    std::array<TexturePtr, kCarSkinCount> riders_;   // racer sprites that sit on the motorcycles
 
     // Wind animation: distance the air has moved, integrated frame by frame (not time x speed,
     // which would jump backwards whenever the gust weakens).

@@ -197,6 +197,22 @@ void Audio::buildClips() {
         }
     }
 
+    // Car horn: two slightly detuned square tones (a classic two-note horn), softened by a low-pass filter.
+    {
+        std::vector<float>& c = clip(Sfx::Horn);
+        const std::size_t n = frames(sr, 0.45f);
+        float filtered = 0.0f;
+        for (std::size_t i = 0; i < n; ++i) {
+            const float t = static_cast<float>(i) / static_cast<float>(sr);
+            const float x = static_cast<float>(i) / static_cast<float>(n);
+            const float envelope = std::min(1.0f, t * 60.0f) * std::min(1.0f, (1.0f - x) * 12.0f);
+            const float a = std::fmod(392.0f * t, 1.0f) < 0.5f ? 1.0f : -1.0f;
+            const float b = std::fmod(494.0f * t, 1.0f) < 0.5f ? 1.0f : -1.0f;
+            filtered += (0.5f * (a + b) - filtered) * 0.25f;
+            c.push_back(envelope * 0.2f * filtered);
+        }
+    }
+
     // Skid on oil: a lower, wobbling tyre slip with a wet hiss, sliding down in pitch.
     {
         std::vector<float>& c = clip(Sfx::Skid);

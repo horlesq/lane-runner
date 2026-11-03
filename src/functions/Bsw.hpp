@@ -38,13 +38,22 @@ public:
     bool leftOccupied() const { return left_; }
     bool rightOccupied() const { return right_; }
 
-    // A car in a blind-spot zone is a threat if it is alongside, or behind but keeping up or closing in.
-    // One that is behind and falling back can't be hit by a lane change, so it doesn't count.
+    // A car in a rear zone is a threat if it is alongside (in the blind spot itself), or behind and
+    // closing in so fast that it would reach me within kReachTime (the lane change assist part).
+    // Judged by time, not distance: a car 30 m back is harmless at the same speed, deadly at +12 m/s.
     static bool isThreat(const DetectedObject& o) {
-        const bool alongside = o.longitudinal > -cfg::kCarLength;
-        const bool keepingUp = o.relativeSpeed > -1.0f;
-        return alongside || keepingUp;
+        const float bumperGap = -o.longitudinal - (cfg::kCarLength + o.length) / 2.0f;   // > 0 when fully behind me
+        if (bumperGap < kAlongsideGap) {
+            return true;
+        }
+        if (o.relativeSpeed <= 0.0f) {
+            return false;   // behind and not catching up
+        }
+        return bumperGap / o.relativeSpeed < kReachTime;
     }
+
+    static constexpr float kAlongsideGap = 3.0f;   // m; closer than this behind counts as "in the blind spot"
+    static constexpr float kReachTime = 3.5f;      // s; a car that would reach me sooner is a threat
 
 private:
     static bool hasThreat(const ObjectList& objects) {

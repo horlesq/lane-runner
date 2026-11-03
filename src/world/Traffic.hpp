@@ -15,12 +15,19 @@ struct DriverState {
     float signalTime = 0.0f;     // s the indicator has been on
     bool changingLane = false;   // moving sideways into the signalled lane
     float cooldown = 0.0f;       // s before it looks for another lane change
+    float reactionTime = 1.0f;   // s before reacting when someone suddenly cuts in close
+    float reactionLeft = 0.0f;   // s still to go before this driver notices
+    bool followingPlayer = false;
+    float accel = 0.0f;          // m/s^2 last cycle (brake lights; kept while not yet reacting)
+    float honkCooldown = 0.0f;   // s before it can honk again
 };
 
 // NPC traffic with simple but standard driver models:
 //  - car following with IDM (smooth, realistic braking behind slower cars and behind the player),
 //  - lane changes with MOBIL (only when faster AND safe for the car behind), announced by indicators,
-//  - mixed personalities: calm drivers, slow pickups, and a few aggressive ones that cut in tight.
+//  - mixed personalities: calm drivers, slow pickups, aggressive ones that cut in tight, fast motorcycles,
+//  - human reaction time: when the player cuts in close, a driver keeps going for 0.6-1.4 s before
+//    braking, so an unchecked lane change in front of a fast car can end in a rear-end crash.
 // A fixed pool of cars is recycled (no allocation): cars far behind or ahead are respawned.
 class Traffic {
 public:
@@ -45,7 +52,7 @@ public:
         // 1. Every driver decides from the same snapshot, so the result doesn't depend on update order.
         std::array<float, kMaxCars> accel{};
         for (std::size_t i = 0; i < kMaxCars; ++i) {
-            accel[i] = driver::idmAccel(cars_[i].speed(), drivers_[i].profile, leaderOf(i, egoCar));
+            accel[i] = decideAccel(i, dt, egoCar);
         }
 
         // 2. Lane changes: indicate first, re-check, then move.
@@ -55,6 +62,7 @@ public:
 
         // 3. Move, then recycle cars that left the area around the player.
         for (std::size_t i = 0; i < kMaxCars; ++i) {
+            drivers_[i].accel = accel[i];
             cars_[i].setAcceleration(accel[i]);
             cars_[i].step(dt);
             const float relative = cars_[i].position() - ego.position();   // + = ahead of me, - = behind
@@ -68,6 +76,22 @@ public:
     const DriverState& driver(std::size_t i) const { return drivers_[i]; }
     int laneChanges() const { return laneChanges_; }   // total started, for tests and statistics
 
+    // How many times since the last call a driver had to brake hard because the player cut them off.
+    int takeCutOffs() {
+        const int n = cutOffs_;
+        cutOffs_ = 0;
+        return n;
+    }
+
+    // Put vehicle i in a scripted state (tests and scenarios); its driver starts fresh with this profile.
+    void place(std::size_t i, const Vehicle& vehicle, const driver::Profile& profile, float reactionTime) {
+        cars_[i] = vehicle;
+        drivers_[i] = DriverState{};
+        drivers_[i].profile = profile;
+        drivers_[i].reactionTime = reactionTime;
+        drivers_[i].cooldown = 1000.0f;   // scripted vehicles keep their lane
+    }
+
 private:
     static constexpr float kFollowWidth = 0.6f;    // lanes; a car this close sideways counts as "in front of me"
     static constexpr float kSignalLead = 0.8f;     // s of indicating before starting to move over
@@ -78,12 +102,21 @@ private:
     static constexpr float kRubberBandChance = 0.35f;         // some slower ones too, sped up to overtake
     static constexpr float kMinSpeedForOvertakers = 2.0f;     // m/s; a stopped player gets no overtakers
     static constexpr float kMaxNpcSpeed = 46.0f;           // m/s, 165 km/h
+    static constexpr float kMotorcycleChance = 0.12f;      // share of new vehicles that are motorcycles
+    static constexpr float kCutOffDecel = 3.5f;            // m/s^2; braking this hard because of the player = cut off
+    static constexpr float kHonkCooldown = 4.0f;           // s
 
     // Another road user found in a lane, with what is needed to predict its reaction.
     struct Other {
         float position;
         float speed;
+        float length;
         driver::Profile profile;
+    };
+
+    struct Leader {
+        driver::Neighbour neighbour;
+        bool isPlayer;
     };
 
     // The player is treated as a cautious driver when NPCs check whether cutting in is safe.
@@ -94,27 +127,52 @@ private:
         return p;
     }
 
+    // Acceleration for driver i: IDM behind its leader, but with a human reaction time when the player
+    // suddenly appears inside its following distance (a cut-in): until it notices, it keeps doing what it did.
+    float decideAccel(std::size_t i, float dt, const Vehicle* ego) {
+        DriverState& d = drivers_[i];
+        d.honkCooldown -= dt;
+        const std::optional<Leader> leader = leaderOf(i, ego);
+        const bool behindPlayer = leader && leader->isPlayer;
+        const float comfortableGap = cars_[i].speed() * d.profile.timeHeadway;
+        if (behindPlayer && !d.followingPlayer && leader->neighbour.gap < comfortableGap) {
+            d.reactionLeft = d.reactionTime;   // the player appeared out of nowhere
+        }
+        d.followingPlayer = behindPlayer;
+
+        float a = driver::idmAccel(cars_[i].speed(), d.profile,
+                                   leader ? std::optional<driver::Neighbour>(leader->neighbour) : std::nullopt);
+        if (d.reactionLeft > 0.0f) {
+            d.reactionLeft -= dt;
+            a = d.accel;   // hasn't reacted yet
+        } else if (behindPlayer && a < -kCutOffDecel && d.honkCooldown <= 0.0f) {
+            ++cutOffs_;    // forced to brake hard because of the player
+            d.honkCooldown = kHonkCooldown;
+        }
+        return a;
+    }
+
     // Leader for car following: nearest vehicle ahead that overlaps me sideways (also mid lane change).
-    std::optional<driver::Neighbour> leaderOf(std::size_t i, const Vehicle* ego) const {
+    std::optional<Leader> leaderOf(std::size_t i, const Vehicle* ego) const {
         const Vehicle& me = cars_[i];
-        std::optional<driver::Neighbour> best;
-        const auto consider = [&](const Vehicle& other) {
+        std::optional<Leader> best;
+        const auto consider = [&](const Vehicle& other, bool isPlayer) {
             const float distance = other.position() - me.position();
             if (distance <= 0.0f || std::abs(other.lateral() - me.lateral()) >= kFollowWidth) {
                 return;
             }
-            const float gap = distance - cfg::kCarLength;
-            if (!best || gap < best->gap) {
-                best = driver::Neighbour{gap, other.speed()};
+            const float gap = bumperGap(me, other);
+            if (!best || gap < best->neighbour.gap) {
+                best = Leader{driver::Neighbour{gap, other.speed()}, isPlayer};
             }
         };
         for (std::size_t j = 0; j < kMaxCars; ++j) {
             if (j != i) {
-                consider(cars_[j]);
+                consider(cars_[j], false);
             }
         }
         if (ego) {
-            consider(*ego);
+            consider(*ego, true);
         }
         return best;
     }
@@ -131,20 +189,20 @@ private:
     std::optional<Other> nearestInLane(std::size_t i, int lane, bool ahead, const Vehicle* ego) const {
         const float myPos = cars_[i].position();
         std::optional<Other> best;
-        const auto consider = [&](float position, float speed, const driver::Profile& profile) {
-            const float distance = ahead ? position - myPos : myPos - position;
+        const auto consider = [&](const Vehicle& v, const driver::Profile& profile) {
+            const float distance = ahead ? v.position() - myPos : myPos - v.position();
             const bool onThisSide = ahead ? distance > 0.0f : distance >= 0.0f;   // exactly level counts as behind
             if (onThisSide && (!best || distance < std::abs(best->position - myPos))) {
-                best = Other{position, speed, profile};
+                best = Other{v.position(), v.speed(), v.length(), profile};
             }
         };
         for (std::size_t j = 0; j < kMaxCars; ++j) {
             if (j != i && occupies(j, lane)) {
-                consider(cars_[j].position(), cars_[j].speed(), drivers_[j].profile);
+                consider(cars_[j], drivers_[j].profile);
             }
         }
         if (ego && std::abs(ego->lateral() - static_cast<float>(lane)) < kFollowWidth) {
-            consider(ego->position(), ego->speed(), egoProfile(*ego));
+            consider(*ego, egoProfile(*ego));
         }
         return best;
     }
@@ -155,27 +213,30 @@ private:
         const std::optional<Other> leader = nearestInLane(i, lane, true, ego);
         const std::optional<Other> follower = nearestInLane(i, lane, false, ego);
 
-        const float minRoom = cfg::kCarLength + kBesideMargin;
-        if ((leader && leader->position - me.position() < minRoom) ||
-            (follower && me.position() - follower->position < minRoom)) {
+        const auto minRoom = [&](const Other& o) { return (me.length() + o.length) / 2.0f + kBesideMargin; };
+        if ((leader && leader->position - me.position() < minRoom(*leader)) ||
+            (follower && me.position() - follower->position < minRoom(*follower))) {
             return std::nullopt;   // someone is right beside me
         }
 
-        const auto gapBetween = [](float frontPos, float backPos) { return frontPos - backPos - cfg::kCarLength; };
+        // Bumper gap between a front and a back road user, from their centres and lengths.
+        const auto gapBetween = [](float frontPos, float frontLen, float backPos, float backLen) {
+            return frontPos - backPos - (frontLen + backLen) / 2.0f;
+        };
 
         driver::LaneChangeOption o{};
         o.myAccelNow = myAccelNow;
         o.myAccelAfter = driver::idmAccel(
             me.speed(), drivers_[i].profile,
-            leader ? std::optional<driver::Neighbour>(driver::Neighbour{gapBetween(leader->position, me.position()), leader->speed})
+            leader ? std::optional<driver::Neighbour>(driver::Neighbour{gapBetween(leader->position, leader->length, me.position(), me.length()), leader->speed})
                    : std::nullopt);
         if (follower) {
             o.followerAccelNow = driver::idmAccel(
                 follower->speed, follower->profile,
-                leader ? std::optional<driver::Neighbour>(driver::Neighbour{gapBetween(leader->position, follower->position), leader->speed})
+                leader ? std::optional<driver::Neighbour>(driver::Neighbour{gapBetween(leader->position, leader->length, follower->position, follower->length), leader->speed})
                        : std::nullopt);
             o.followerAccelAfter = driver::idmAccel(
-                follower->speed, follower->profile, driver::Neighbour{gapBetween(me.position(), follower->position), me.speed()});
+                follower->speed, follower->profile, driver::Neighbour{gapBetween(me.position(), me.length(), follower->position, follower->length), me.speed()});
         }
         return o;
     }
@@ -235,25 +296,33 @@ private:
         }
     }
 
-    DriverState makeDriver(int variant) {
+    DriverState makeDriver(int variant, VehicleType type = VehicleType::Car) {
         auto uniform = [this](float lo, float hi) { return std::uniform_real_distribution<float>(lo, hi)(rng_); };
         DriverState d;
-        const bool pickup = variant / kColours == kPickupModel;
-        const bool aggressive = !pickup && std::bernoulli_distribution(0.15)(rng_);
-        if (pickup) {
+        const bool pickup = type == VehicleType::Car && variant / kColours == kPickupModel;
+        const bool aggressive = type == VehicleType::Car && !pickup && std::bernoulli_distribution(0.15)(rng_);
+        if (type == VehicleType::Motorcycle) {
+            d.profile = {uniform(34.0f, 44.0f), uniform(0.7f, 1.0f), 0.1f, 5.0f};   // fast and nimble: 122-158 km/h
+            d.reactionTime = uniform(0.6f, 0.9f);
+        } else if (pickup) {
             d.profile = {uniform(14.0f, 19.0f), uniform(1.6f, 2.2f), 0.5f, 2.0f};   // slow and careful: 50-68 km/h
+            d.reactionTime = uniform(1.0f, 1.4f);
         } else if (aggressive) {
             d.profile = {uniform(30.0f, 38.0f), uniform(0.8f, 1.0f), 0.0f, 6.0f};   // fast, tailgates, cuts in: 108-137 km/h
+            d.reactionTime = uniform(0.7f, 1.0f);
         } else {
             d.profile = {uniform(20.0f, 30.0f), uniform(1.2f, 1.8f), 0.3f, 3.0f};   // 72-108 km/h
+            d.reactionTime = uniform(0.8f, 1.2f);
         }
         d.cooldown = uniform(1.0f, 4.0f);
         return d;
     }
 
     void respawn(std::size_t i, const Vehicle& ego) {
-        const int variant = std::uniform_int_distribution<int>(0, kVariantCount - 1)(rng_);
-        DriverState fresh = makeDriver(variant);
+        const VehicleType type = std::bernoulli_distribution(kMotorcycleChance)(rng_) ? VehicleType::Motorcycle : VehicleType::Car;
+        const int variant = type == VehicleType::Motorcycle ? std::uniform_int_distribution<int>(0, kColours - 1)(rng_)
+                                                             : std::uniform_int_distribution<int>(0, kVariantCount - 1)(rng_);
+        DriverState fresh = makeDriver(variant, type);
 
         // Where a new car appears depends on who is faster:
         //  - faster than the player: ahead it would only drive away, so it usually comes from behind and overtakes,
@@ -261,7 +330,7 @@ private:
         // So that cars still overtake a player near top speed, some slower drivers are also sent from behind
         // and then made 7-11 m/s faster than the player is going right now (game-design "rubber banding").
         // Slow pickups never come from behind.
-        const bool pickup = variant / kColours == kPickupModel;
+        const bool pickup = type == VehicleType::Car && variant / kColours == kPickupModel;
         const bool fasterThanPlayer = fresh.profile.desiredSpeed > ego.speed() + 3.0f;
         const float behindChance = fasterThanPlayer ? kFasterFromBehindChance : kRubberBandChance;
         const bool fromBehind = !pickup && ego.speed() > kMinSpeedForOvertakers && std::bernoulli_distribution(behindChance)(rng_);
@@ -302,7 +371,7 @@ private:
         if (!isFree(i, lane, position, speed, ego)) {
             return;   // try again next cycle with new random values
         }
-        cars_[i].reset(lane, speed, position, variant);
+        cars_[i].reset(lane, speed, position, variant, type);
         drivers_[i] = fresh;
     }
 
@@ -333,4 +402,5 @@ private:
     std::array<DriverState, kMaxCars> drivers_;
     std::mt19937 rng_{42};   // fixed seed: the same traffic every run, so behaviour is reproducible
     int laneChanges_ = 0;
+    int cutOffs_ = 0;
 };

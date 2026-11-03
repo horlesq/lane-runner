@@ -43,6 +43,9 @@ constexpr float kStartSpeed = 20.0f;   // m/s
 constexpr float kMenuSpeed = 22.0f;    // m/s, camera speed behind the title menu
 constexpr float kTopSpeed = 40.0f;     // m/s (144 km/h); throttle fades out towards it, also scales the engine sound
 constexpr float kMaxThrottle = 4.0f;   // m/s^2 at low speed
+constexpr int kCutOffPenalty = 250;    // points lost each time a driver has to brake hard because of you
+constexpr float kPenaltyFlashTime = 1.2f;   // s the score flashes red
+constexpr float kBrakeLightDecel = 1.5f;    // m/s^2; NPCs braking harder than this show brake lights
 constexpr float kDriverSteerRate = 2.0f;   // lanes/s while ← or → is held; stronger than LKA's 1.2
 
 int main(int /*argc*/, char* /*argv*/[]) {
@@ -116,6 +119,8 @@ int main(int /*argc*/, char* /*argv*/[]) {
     int best = 0;
     int lastScore = 0;
     bool newBest = false;
+    int penalty = 0;              // points lost for cutting other drivers off
+    float penaltyFlash = 0.0f;    // s left of the red score flash
 
     bool showSensorDebug = true;   // Tab: engineer's view of what the sensors detect
 
@@ -126,8 +131,8 @@ int main(int /*argc*/, char* /*argv*/[]) {
     const auto isBraking = [](AebStage s) { return s == AebStage::PartialBrake || s == AebStage::FullBrake; };
     BswState lastBswState = BswState::Off;
 
-    const auto scoreOf = [](const Vehicle& v) {
-        return static_cast<int>(v.position() * layout::kPixelsPerMeter / 10.0f);
+    const auto scoreOf = [&](const Vehicle& v) {
+        return std::max(0, static_cast<int>(v.position() * layout::kPixelsPerMeter / 10.0f) - penalty);
     };
 
     const auto startRun = [&]() {
@@ -139,6 +144,8 @@ int main(int /*argc*/, char* /*argv*/[]) {
         lka = Lka();
         bsw = Bsw();
         lastBswState = BswState::Off;
+        penalty = 0;
+        penaltyFlash = 0.0f;
         wind = Wind();
         oil = OilField();
         lastAebStage = AebStage::Inactive;
@@ -316,6 +323,15 @@ int main(int /*argc*/, char* /*argv*/[]) {
             traffic.step(cfg::kCycleTime, ego, screen == Screen::Playing);   // title screen: NPCs ignore the camera
             accumulator -= cfg::kCycleTime;
 
+            // Cutting someone off: they honk, you lose points.
+            const int cutOffs = traffic.takeCutOffs();
+            if (cutOffs > 0 && screen == Screen::Playing) {
+                audio.play(Sfx::Horn);
+                penalty += kCutOffPenalty * cutOffs;
+                penaltyFlash = kPenaltyFlashTime;
+            }
+            penaltyFlash = std::max(0.0f, penaltyFlash - cfg::kCycleTime);
+
             if (screen != Screen::Playing) {
                 continue;
             }
@@ -337,6 +353,7 @@ int main(int /*argc*/, char* /*argv*/[]) {
         // --- HUD ---
         const float scroll = ego.position() * layout::kPixelsPerMeter;
         hud.score = scoreOf(ego);
+        hud.scorePenalty = penaltyFlash > 0.0f;
         hud.best = best;
         hud.speedKmh = static_cast<int>(ego.speed() * 3.6f);   // m/s -> km/h
 
@@ -393,10 +410,15 @@ int main(int /*argc*/, char* /*argv*/[]) {
             const float x = (car.lateral() + 0.5f) * cfg::kLaneWidth;
             const float y = layout::kEgoScreenY - (car.position() - ego.position()) * layout::kPixelsPerMeter;
 
-            // One variant number encodes both colour and body style.
+            // One variant number encodes both colour and body style (cars) or just the colour (motorcycles).
             const auto variant = static_cast<std::size_t>(car.variant());
-            gfx.drawCar(x, y, kNpcSkins[variant % kNpcSkins.size()], variant / kNpcSkins.size(),
-                        traffic.driver(i).signal);
+            const DriverState& driver = traffic.driver(i);
+            const bool braking = driver.accel < -kBrakeLightDecel;
+            if (car.type() == VehicleType::Motorcycle) {
+                gfx.drawMotorcycle(x, y, kNpcSkins[variant % kNpcSkins.size()], driver.signal, braking);
+            } else {
+                gfx.drawCar(x, y, kNpcSkins[variant % kNpcSkins.size()], variant / kNpcSkins.size(), driver.signal, braking);
+            }
         }
 
         if (screen == Screen::Menu) {

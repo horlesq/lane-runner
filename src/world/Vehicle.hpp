@@ -1,13 +1,21 @@
 #pragma once
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include "core/Config.hpp"
+
+enum class VehicleType : std::uint8_t { Car, Motorcycle };
+
+namespace vehicle_size {
+    constexpr float kMotorcycleLength = 2.2f;   // m
+    constexpr float kMotorcycleWidth = 0.2f;    // lanes
+} // namespace vehicle_size
 
 class Vehicle {
     public:
         Vehicle(int lane, float speed, float position = 0.0f)
             : lane_(lane), lateral_(static_cast<float>(lane)), position_(position), speed_(speed), accel_(0.0f), variant_(0),
-              freeSteering_(false), steerCommand_(0.0f), lateralRate_(0.0f), push_(0.0f), hitCurb_(false), grip_(1.0f) {}
+              freeSteering_(false), steerCommand_(0.0f), lateralRate_(0.0f), push_(0.0f), hitCurb_(false), grip_(1.0f), type_(VehicleType::Car) {}
 
         Vehicle() : Vehicle(0, 0.0f) {}
 
@@ -15,6 +23,11 @@ class Vehicle {
         float lateral() const { return lateral_; }
         float position() const { return position_; }
         float speed() const { return speed_; }
+        VehicleType type() const { return type_; }
+
+        // Hitbox: a motorcycle is much shorter and narrower than a car.
+        float length() const { return type_ == VehicleType::Motorcycle ? vehicle_size::kMotorcycleLength : cfg::kCarLength; }
+        float width() const { return type_ == VehicleType::Motorcycle ? vehicle_size::kMotorcycleWidth : cfg::kCarWidthLanes; }
 
         void setAcceleration(float accel) { accel_ = accel; }
 
@@ -47,7 +60,7 @@ class Vehicle {
             position_ += speed_ * dt;
         }
 
-        void reset(int lane, float speed, float position, int variant) {
+        void reset(int lane, float speed, float position, int variant, VehicleType type = VehicleType::Car) {
             lane_ = lane;
             lateral_ = static_cast<float>(lane);
             position_ = position;
@@ -55,6 +68,7 @@ class Vehicle {
             accel_ = 0.0f;
             variant_ = variant;
             lateralRate_ = 0.0f;
+            type_ = type;
         }
 
         int variant() const { return variant_; }
@@ -67,8 +81,8 @@ class Vehicle {
             lateral_ += (lateralRate_ + push_) * dt;
 
             // The barrier at the road edge stops the car; the game treats touching it as a crash.
-            constexpr float kMin = -0.5f + cfg::kCarWidthLanes / 2.0f;
-            constexpr float kMax = static_cast<float>(cfg::kLaneCount) - 0.5f - cfg::kCarWidthLanes / 2.0f;
+            const float kMin = -0.5f + width() / 2.0f;
+            const float kMax = static_cast<float>(cfg::kLaneCount) - 0.5f - width() / 2.0f;
             hitCurb_ = lateral_ < kMin || lateral_ > kMax;
             if (hitCurb_) {
                 lateral_ = std::clamp(lateral_, kMin, kMax);
@@ -91,4 +105,15 @@ class Vehicle {
         float push_;           // lanes/s from outside forces (wind)
         bool hitCurb_;
         float grip_;           // 0..1
+        VehicleType type_;
 };
+
+// Bumper-to-bumper distance from the rear vehicle's front to the front vehicle's back.
+inline float bumperGap(const Vehicle& rear, const Vehicle& front) {
+    return front.position() - rear.position() - (rear.length() + front.length()) / 2.0f;
+}
+
+// Do two vehicles overlap sideways (would they touch if they were level)?
+inline bool overlapSideways(const Vehicle& a, const Vehicle& b) {
+    return std::abs(a.lateral() - b.lateral()) < (a.width() + b.width()) / 2.0f;
+}

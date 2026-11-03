@@ -76,6 +76,13 @@ bool Renderer2D::loadAssets(const std::string& assetDir) {
     treeLarge_ = loadTexture(r_, png + "Objects/tree_large.png");
     rock_ = loadTexture(r_, png + "Objects/rock2.png");
     oil_ = loadTexture(r_, png + "Objects/oil.png");
+    for (std::size_t skin = 0; skin < kCarSkinCount; ++skin) {
+        motorcycles_[skin] = loadTexture(r_, png + "Motorcycles/motorcycle_" + colours[skin] + ".png");
+        riders_[skin] = loadTexture(r_, png + "Characters/racer_" + colours[skin] + ".png");
+        if (!motorcycles_[skin] || !riders_[skin]) {
+            return false;
+        }
+    }
     if (!oil_) {
         return false;
     }
@@ -156,25 +163,51 @@ void Renderer2D::drawScenery(float scrollPx) {
     }
 }
 
-void Renderer2D::drawCar(float centerX, float centerY, CarSkin skin, std::size_t model, int signal) {
+void Renderer2D::drawCar(float centerX, float centerY, CarSkin skin, std::size_t model, int signal, bool braking) {
     const CarSprite& sprite = cars_[static_cast<std::size_t>(skin)][model % kCarModelCount];
     const float height = static_cast<float>(layout::kCarHeight) * sprite.lengthScale;
     const float x = static_cast<float>(layout::kRoadX) + centerX;
     drawSprite(sprite.texture.get(), x, centerY, static_cast<float>(layout::kCarWidth), height, true);
+    drawLamps(x, centerY, layout::kCarWidth / 2.0f - 2.0f, height, signal, braking);
+}
 
+void Renderer2D::drawMotorcycle(float centerX, float centerY, CarSkin skin, int signal, bool braking) {
+    // Sprite is 44 x 100; drawn about 2.4 m long, the same scale as the cars.
+    constexpr float kHeight = 48.0f;
+    constexpr float kWidth = kHeight * 44.0f / 100.0f;
+    const float x = static_cast<float>(layout::kRoadX) + centerX;
+    drawSprite(motorcycles_[static_cast<std::size_t>(skin)].get(), x, centerY, kWidth, kHeight, true);
+
+    // Rider (42 x 51 sprite, same scale as the bike): sits just behind the middle, arms on the handlebars.
+    // Suit colour picked to contrast with the bike.
+    const std::size_t suit = (static_cast<std::size_t>(skin) + 2) % kCarSkinCount;
+    constexpr float kRiderHeight = 51.0f * kHeight / 100.0f;
+    constexpr float kRiderWidth = 42.0f * kHeight / 100.0f;
+    drawSprite(riders_[suit].get(), x, centerY + 2.0f, kRiderWidth, kRiderHeight, false);
+
+    drawLamps(x, centerY, kWidth / 2.0f, kHeight, signal, braking);
+}
+
+void Renderer2D::drawLamps(float x, float centerY, float halfWidth, float height, int signal, bool braking) {
+    // Each lamp: a soft glow reaching past the body, a dark outline so it reads on any paint, a bright core.
+    const auto lamp = [this](int lx, int ly, SDL_Color glow, SDL_Color core) {
+        fillRect(lx - 9, ly - 8, 18, 16, glow);
+        fillRect(lx - 5, ly - 4, 10, 8, SDL_Color{20, 16, 10, 230});
+        fillRect(lx - 4, ly - 3, 8, 6, core);
+    };
+    const int rear = static_cast<int>(centerY + height / 2.0f - 8.0f);
+
+    if (braking) {
+        for (int side : {-1, 1}) {
+            lamp(static_cast<int>(x + static_cast<float>(side) * halfWidth), rear,
+                 SDL_Color{255, 40, 30, 120}, SDL_Color{255, 70, 60, 255});
+        }
+    }
     if (signal != 0 && blink(500)) {
-        // Amber lamps on the front and rear corner of the indicated side: a glow reaching past the
-        // car's edge, a dark outline so they read on orange and yellow cars too, and a bright core.
-        constexpr SDL_Color kGlow{255, 176, 0, 110};
-        constexpr SDL_Color kOutline{20, 16, 10, 230};
-        constexpr SDL_Color kLamp{255, 214, 60, 255};
-        const int side = static_cast<int>(x + static_cast<float>(signal) * (layout::kCarWidth / 2.0f - 2.0f));
+        const int side = static_cast<int>(x + static_cast<float>(signal) * halfWidth);
         const int front = static_cast<int>(centerY - height / 2.0f + 8.0f);
-        const int rear = static_cast<int>(centerY + height / 2.0f - 8.0f);
         for (int y : {front, rear}) {
-            fillRect(side - 9, y - 8, 18, 16, kGlow);
-            fillRect(side - 5, y - 4, 10, 8, kOutline);
-            fillRect(side - 4, y - 3, 8, 6, kLamp);
+            lamp(side, y, SDL_Color{255, 176, 0, 110}, SDL_Color{255, 214, 60, 255});
         }
     }
 }
@@ -192,7 +225,7 @@ void Renderer2D::drawPanel(const HudView& hud) {
 
     font::drawText(r_, "SCORE", left, 44, 1, color::kLabel);
     std::snprintf(buf, sizeof buf, "%06d", hud.score);
-    font::drawTextShadow(r_, buf, left, 56, 3, color::kText);
+    font::drawTextShadow(r_, buf, left, 56, 3, hud.scorePenalty && blink(200) ? color::kCrash : color::kText);
 
     font::drawText(r_, "BEST", left, 88, 1, color::kLabel);
     std::snprintf(buf, sizeof buf, "%06d", hud.best);

@@ -15,32 +15,23 @@ struct Lead {
 // Works on any container of Vehicles (std::array, a test's hand-placed cars, ...).
 template <typename Cars>
 std::optional<Lead> findLead(const Vehicle& ego, const Cars& cars) {
-    float nearestDistance = cfg::kSensorRange;
-    float nearestSpeed = 0.0f;
-    bool found = false;
+    const Vehicle* nearest = nullptr;
 
-    // find the nearest car ahead in the same lane, within sensor range
+    // find the nearest vehicle ahead that overlaps my path, within sensor range
     for (const Vehicle& car : cars) {
-        float distance = car.position() - ego.position();
-
-        const bool inMyLane = std::abs(car.lateral() - ego.lateral()) < cfg::kCarWidthLanes;
-        const bool ahead = distance > 0.0f;
-
-        if (!inMyLane || !ahead) {
+        const float distance = car.position() - ego.position();
+        if (!overlapSideways(car, ego) || distance <= 0.0f || distance >= cfg::kSensorRange) {
             continue;   // not a candidate, next car
         }
-        
-        if (distance < nearestDistance) {   // closer than the best so far (and within sensor range)
-            nearestDistance = distance;
-            nearestSpeed = car.speed();
-            found = true;
+        if (!nearest || distance < nearest->position() - ego.position()) {
+            nearest = &car;
         }
     }
 
-    if (!found) {
+    if (!nearest) {
         return std::nullopt;
     }
-    return Lead{nearestDistance - cfg::kCarLength, nearestSpeed - ego.speed()};
+    return Lead{bumperGap(ego, *nearest), nearest->speed() - ego.speed()};
 }
 
 // The game's version: search the live traffic.
