@@ -11,6 +11,7 @@
 #include "core/Config.hpp"
 #include "functions/Acc.hpp"
 #include "functions/Aeb.hpp"
+#include "functions/Lka.hpp"
 #include "platform/SdlContext.hpp"
 #include "platform/Window.hpp"
 #include "render/Layout.hpp"
@@ -19,6 +20,7 @@
 #include "world/Lead.hpp"
 #include "world/Traffic.hpp"
 #include "world/Vehicle.hpp"
+#include "world/Wind.hpp"
 
 // ASSET_DIR is injected by CMake; wrap the macro in a typed constant once and use that.
 constexpr const char* kAssetDir = ASSET_DIR;
@@ -35,6 +37,7 @@ static_assert(kMenuShop != kMenuStart, "Menu indices must be distinct");
 constexpr float kStartSpeed = 20.0f;   // m/s
 constexpr float kMenuSpeed = 22.0f;    // m/s, camera speed behind the title menu
 constexpr float kTopSpeed = 40.0f;     // m/s, only used to scale the engine sound
+constexpr float kDriverSteerRate = 2.0f;   // lanes/s while ← or → is held; stronger than LKA's 1.2
 
 int main(int /*argc*/, char* /*argv*/[]) {
     // --- Platform setup (destroyed in reverse order when main returns) ---
@@ -87,6 +90,8 @@ int main(int /*argc*/, char* /*argv*/[]) {
     Traffic traffic;
     Acc acc;   // adaptive cruise control
     Aeb aeb;   // automatic emergency braking, always on
+    Lka lka;   // lane keeping assist
+    Wind wind;
     MenuView menu;
     HudView hud;
     int best = 0;
@@ -107,9 +112,12 @@ int main(int /*argc*/, char* /*argv*/[]) {
 
     const auto startRun = [&]() {
         ego = Vehicle(1, kStartSpeed);
+        ego.enableFreeSteering();
         traffic = Traffic();
         acc = Acc();
         aeb = Aeb();
+        lka = Lka();
+        wind = Wind();
         lastAebStage = AebStage::Inactive;
         screen = Screen::Playing;
         audio.play(Sfx::Start);
@@ -120,6 +128,7 @@ int main(int /*argc*/, char* /*argv*/[]) {
         traffic = Traffic();
         acc = Acc();
         aeb = Aeb();
+        lka = Lka();
         menu.best = best;
         screen = Screen::Menu;
     };
@@ -165,24 +174,18 @@ int main(int /*argc*/, char* /*argv*/[]) {
                     }
                     break;
                 }
-                case Screen::Playing: {
-                    const int laneBefore = ego.lane();
-                    if (key == SDLK_LEFT) {
-                        ego.changeLane(-1);
-                    } else if (key == SDLK_RIGHT) {
-                        ego.changeLane(+1);
-                    } else if (key == SDLK_ESCAPE) {
+                case Screen::Playing:
+                    // Steering is held, so it's read as keyboard state in the logic loop, not here.
+                    if (key == SDLK_ESCAPE) {
                         backToMenu();
                     } else if (key == SDLK_TAB) {
                         showSensorDebug = !showSensorDebug;
                     } else if (key == SDLK_a) {
                         acc.toggle(ego.speed());
-                    }
-                    if (ego.lane() != laneBefore) {
-                        audio.play(Sfx::LaneChange);   // no whoosh when already at the road edge
+                    } else if (key == SDLK_l) {
+                        lka.toggle();
                     }
                     break;
-                }
                 case Screen::GameOver:
                     if (confirm) {
                         startRun();
@@ -239,11 +242,30 @@ int main(int /*argc*/, char* /*argv*/[]) {
                     }
                 }
                 lastAebStage = stage;
+
+                // Lateral: driver steering beats LKA; wind pushes the car whatever anyone wants.
+                const bool left = keys[SDL_SCANCODE_LEFT];
+                const bool right = keys[SDL_SCANCODE_RIGHT];
+                std::optional<float> driverSteer;
+                if (left != right) {   // both or neither held: no steering
+                    driverSteer = left ? -kDriverSteerRate : kDriverSteerRate;
+                }
+                std::optional<float> lkaSteer;
+                const float lkaCommand = lka.step(cfg::kCycleTime, ego.lateral(), driverSteer.has_value());
+                if (lka.state() == LkaState::Active) {
+                    lkaSteer = lkaCommand;
+                }
+                ego.steer(arbitrateSteer(driverSteer, lkaSteer).rate);
+                ego.push(wind.step(cfg::kCycleTime));
             } else {
                 ego.setAcceleration(0.0f);   // menu: an invisible camera cruises through traffic
             }
 
+            const int laneBefore = ego.lane();
             ego.step(cfg::kCycleTime);
+            if (screen == Screen::Playing && ego.lane() != laneBefore) {
+                audio.play(Sfx::LaneChange);   // whoosh when crossing a lane line
+            }
             traffic.step(cfg::kCycleTime, ego);
             accumulator -= cfg::kCycleTime;
 
@@ -288,6 +310,15 @@ int main(int /*argc*/, char* /*argv*/[]) {
         }
         aebLamp.level = 1.0f;
 
+        AssistView& lkaLamp = hud.assists[2];   // amber while the driver steers over it
+        switch (lka.state()) {
+            case LkaState::Active:     lkaLamp.lamp = AssistLamp::Active;    break;
+            case LkaState::Overridden: lkaLamp.lamp = AssistLamp::Degraded;  break;
+            case LkaState::Off:        lkaLamp.lamp = AssistLamp::Off;       break;
+        }
+        lkaLamp.level = 1.0f;
+        hud.wind = screen == Screen::Playing ? wind.current() : 0.0f;
+
         // --- Render: back to front ---
         gfx.drawRoad(scroll);
 
@@ -312,6 +343,9 @@ int main(int /*argc*/, char* /*argv*/[]) {
             if (showSensorDebug) {
                 if (const std::optional<Lead> lead = findLead(ego, traffic)) {
                     gfx.drawLeadMarker(egoX, lead->gap, lead->relativeSpeed);
+                }
+                if (lka.state() == LkaState::Active) {
+                    gfx.drawLaneTarget((static_cast<float>(lka.targetLane()) + 0.5f) * cfg::kLaneWidth);
                 }
             }
 

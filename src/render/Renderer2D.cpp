@@ -224,7 +224,31 @@ void Renderer2D::drawPanel(const HudView& hud) {
     font::drawText(r_, camera, right - font::textWidth(camera, 2), 386, 2,
                    hud.cameraOk ? color::kActive : color::kDegraded);
 
+    // Wind: arrows point where the car is being pushed; more arrows = stronger gust.
+    font::drawText(r_, "WIND", left, 410, 2, color::kText);
+    const float strength = std::fabs(hud.wind);
+    if (strength < 0.05f) {
+        font::drawText(r_, "CALM", right - font::textWidth("CALM", 2), 410, 2, color::kActive);
+    } else {
+        const int count = strength < 0.35f ? 1 : (strength < 0.65f ? 2 : 3);
+        const char* arrows = hud.wind > 0.0f ? (count == 1 ? ">" : count == 2 ? ">>" : ">>>")
+                                             : (count == 1 ? "<" : count == 2 ? "<<" : "<<<");
+        font::drawText(r_, arrows, right - font::textWidth(arrows, 2), 410, 2, color::kDegraded);
+    }
+
+    font::drawText(r_, "A: ACC   L: LKA", left, cfg::kScreenHeight - 30, 1, color::kLocked);
     font::drawText(r_, "TAB: DEBUG  ESC: MENU", left, cfg::kScreenHeight - 18, 1, color::kLocked);
+}
+
+void Renderer2D::drawLaneTarget(float centerX) {
+    // Short dashed cyan line ahead of the car on the lane centre LKA steers towards.
+    constexpr SDL_Color kTarget{80, 200, 255, 170};
+    const int x = layout::kRoadX + static_cast<int>(centerX);
+    const int top = static_cast<int>(layout::kEgoScreenY) - layout::kCarHeight / 2 - 90;
+    for (int y = top; y < top + 80; y += 12) {
+        fillRect(x - 1, y, 2, 7, kTarget);
+    }
+    fillRect(x - 6, top + 80, 12, 2, kTarget);
 }
 
 void Renderer2D::drawLeadMarker(float egoX, float gap, float relativeSpeed) {

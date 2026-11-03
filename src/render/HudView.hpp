@@ -27,4 +27,5 @@ struct HudView {
     }};
     bool radarOk = true;
     bool cameraOk = true;
+    float wind = 0.0f;   // lanes/s sideways push, + = to the right
 };

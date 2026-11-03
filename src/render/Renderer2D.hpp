@@ -35,6 +35,9 @@ public:
     // egoX is road-relative like drawCar; gap in m (bumper to bumper), relativeSpeed in m/s.
     void drawLeadMarker(float egoX, float gap, float relativeSpeed);
 
+    // LKA debug view: the lane centre it steers towards (road-relative x).
+    void drawLaneTarget(float centerX);
+
     // Pulsing border around the road: amber for a warning, red (thicker) while braking for the driver.
     void drawAlertBorder(bool danger);
 

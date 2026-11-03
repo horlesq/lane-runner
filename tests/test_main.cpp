@@ -8,6 +8,7 @@
 #include "functions/Acc.hpp"
 #include "control/Arbiter.hpp"
 #include "functions/Aeb.hpp"
+#include "functions/Lka.hpp"
 #include "world/Lead.hpp"
 #include "world/Vehicle.hpp"
 
@@ -261,6 +262,88 @@ static void testArbiterAebOverride() {
     CHECK(arbitrate(driverBrakesHarder).source == AccelSource::Driver && near(arbitrate(driverBrakesHarder).accel, -8.0f));
 }
 
+// --- Free steering & LKA ---
+
+// Runs LKA in closed loop for `seconds`, with an optional constant sideways push (wind).
+// Returns the largest offset from the lane centre seen along the way.
+static float runLka(Vehicle& car, Lka& lka, float seconds, float push) {
+    float maxOffset = 0.0f;
+    for (int i = 0; i < static_cast<int>(seconds / 0.02f); ++i) {
+        car.steer(lka.step(0.02f, car.lateral(), false));
+        car.push(push);
+        car.step(0.02f);
+        maxOffset = std::max(maxOffset, std::abs(car.lateral() - static_cast<float>(car.lane())));
+    }
+    return maxOffset;
+}
+
+// The curb stops a freely steered car at the road edge instead of letting it leave the road.
+static void testFreeSteeringStopsAtCurb() {
+    Vehicle car(0, 20.0f);
+    car.enableFreeSteering();
+    car.steer(-2.0f);   // hold left for 2 s: far more than the half lane to the edge
+    for (int i = 0; i < 100; ++i) {
+        car.step(0.02f);
+    }
+    CHECK(near(car.lateral(), -0.5f + cfg::kCarWidthLanes / 2.0f));
+    CHECK(car.lane() == 0);
+}
+
+// Off: no correction at all.
+static void testLkaOffDoesNothing() {
+    Lka lka;
+    CHECK(near(lka.step(0.02f, 1.3f, false), 0.0f));
+    CHECK(lka.state() == LkaState::Off);
+}
+
+// Car left 0.3 lanes off-centre: LKA steers it back to the middle of lane 1.
+static void testLkaCentersCar() {
+    Vehicle car(1, 20.0f);
+    car.enableFreeSteering();
+    car.steer(1.0f);
+    for (int i = 0; i < 15; ++i) {   // 0.3 s drifting right
+        car.step(0.02f);
+    }
+    car.steer(0.0f);
+    for (int i = 0; i < 25; ++i) {   // let it come to a stop sideways
+        car.step(0.02f);
+    }
+    CHECK(car.lateral() > 1.2f);     // really off-centre before LKA starts
+
+    Lka lka;
+    lka.toggle();
+    runLka(car, lka, 3.0f, 0.0f);
+    CHECK(near(car.lateral(), 1.0f, 0.05f));
+}
+
+// Steady crosswind for 4 s: LKA keeps the car inside its lane. Without LKA the same wind
+// would push it 2.4 lanes sideways. In-lane = less than half a lane minus half a car off-centre.
+static void testLkaHoldsLaneInWind() {
+    Vehicle car(1, 20.0f);
+    car.enableFreeSteering();
+    Lka lka;
+    lka.toggle();
+
+    const float maxOffset = runLka(car, lka, 4.0f, 0.6f);
+    CHECK(maxOffset < 0.5f - cfg::kCarWidthLanes / 2.0f);
+    CHECK(car.lane() == 1);
+}
+
+// The driver always wins: while steering, LKA is Overridden and silent; on release it resumes.
+static void testLkaDriverOverride() {
+    Lka lka;
+    lka.toggle();
+    CHECK(near(lka.step(0.02f, 1.3f, true), 0.0f));
+    CHECK(lka.state() == LkaState::Overridden);
+
+    lka.step(0.02f, 1.3f, false);
+    CHECK(lka.state() == LkaState::Active);
+
+    const SteerDecision d = arbitrateSteer(2.0f, -1.2f);   // driver right vs LKA left
+    CHECK(d.source == SteerSource::Driver && near(d.rate, 2.0f));
+    CHECK(arbitrateSteer(std::nullopt, -1.2f).source == SteerSource::Lka);
+}
+
 int main() {
     testProportionalOnly();
     testOutputIsClamped();
@@ -277,6 +360,11 @@ int main() {
     testAebLatch();
     testArbiterPriority();
     testArbiterAebOverride();
+    testFreeSteeringStopsAtCurb();
+    testLkaOffDoesNothing();
+    testLkaCentersCar();
+    testLkaHoldsLaneInWind();
+    testLkaDriverOverride();
 
     std::printf(g_failures == 0 ? "All tests passed\n" : "%d test(s) failed\n", g_failures);
     return g_failures == 0 ? 0 : 1;

@@ -38,3 +38,23 @@ inline AccelDecision arbitrate(const AccelRequests& in) {
     }
     return base;
 }
+
+// --- Lateral (steering) ---
+
+enum class SteerSource : std::uint8_t { None, Driver, Lka };
+
+struct SteerDecision {
+    float rate;           // lanes/s sideways
+    SteerSource source;   // who won
+};
+
+// The driver always has final authority over steering; LKA only acts when the driver doesn't steer.
+inline SteerDecision arbitrateSteer(std::optional<float> driver, std::optional<float> lka) {
+    if (driver) {
+        return {*driver, SteerSource::Driver};
+    }
+    if (lka) {
+        return {*lka, SteerSource::Lka};
+    }
+    return {0.0f, SteerSource::None};
+}
