@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstdio>
 #include "render/BitmapFont.hpp"
+#include "render/Controls.hpp"
 #include "render/Layout.hpp"
 
 namespace {
@@ -77,11 +78,13 @@ bool Renderer2D::loadAssets(const std::string& assetDir) {
     rock_ = loadTexture(r_, png + "Objects/rock2.png");
     oil_ = loadTexture(r_, png + "Objects/oil.png");
     cone_ = loadTexture(r_, png + "Objects/cone_straight.png");
-    debris_[0] = loadTexture(r_, png + "Objects/tires_white.png");
-    debris_[1] = loadTexture(r_, png + "Objects/barrel_red.png");
-    debris_[2] = loadTexture(r_, png + "Objects/rock1.png");
-    if (!debris_[0] || !debris_[1] || !debris_[2]) {
-        return false;
+    const std::array<const char*, 7> debrisFiles{"tires_white", "tires_white_alt", "barrel_red_down", "barrel_blue_down",
+                                                 "rock1", "rock2", "rock3"};
+    for (std::size_t i = 0; i < debrisFiles.size(); ++i) {
+        debris_[i] = loadTexture(r_, png + "Objects/" + debrisFiles[i] + ".png");
+        if (!debris_[i]) {
+            return false;
+        }
     }
     barrier_ = loadTexture(r_, png + "Objects/barrier_red.png");
     arrow_ = loadTexture(r_, png + "Objects/arrow_yellow.png");
@@ -315,7 +318,7 @@ void Renderer2D::drawPanel(const HudView& hud) {
         font::drawText(r_, arrows, right - font::textWidth(arrows, 2), 410, 2, color::kDegraded);
     }
 
-    font::drawText(r_, "TAB: DEBUG  ESC: MENU", left, cfg::kScreenHeight - 18, 1, color::kLocked);
+    font::drawText(r_, controls::kDriving, left, cfg::kScreenHeight - 18, 1, color::kLocked);
 }
 
 void Renderer2D::drawRoadworks(float laneCenterX, float startY, float endY, int mergeDir) {
@@ -354,10 +357,72 @@ void Renderer2D::drawRoadworks(float laneCenterX, float startY, float endY, int 
     drawSprite(barrier_.get(), x, startY, static_cast<float>(cfg::kLaneWidth) - 8.0f, 22.0f, true);
 }
 
-void Renderer2D::drawDebris(float centerX, float centerY, int kind) {
-    const std::size_t k = static_cast<std::size_t>(kind) % debris_.size();
-    const float size = k == 2 ? 26.0f : 22.0f;   // a rock is a bit bigger than tyres or a barrel
-    drawSprite(debris_[k].get(), static_cast<float>(layout::kRoadX) + centerX, centerY, size, size * (k == 2 ? 0.8f : 1.0f), true);
+void Renderer2D::drawDebris(float centerX, float centerY, int kind, unsigned seed) {
+    const float x = static_cast<float>(layout::kRoadX) + centerX;
+    // Random number in [-1, 1] for item i of this pile.
+    const auto jitter = [&](int i) { return static_cast<float>(hash(static_cast<std::int64_t>(seed) * 97 + i) % 2001u) / 1000.0f - 1.0f; };
+
+    // A sprite scaled so its longest side is `longest` px, rotated, with a soft shadow.
+    const auto piece = [&](SDL_Texture* tex, float px, float py, float longest, double angle, SDL_Color tint = {255, 255, 255, 255}) {
+        int w = 0;
+        int h = 0;
+        SDL_QueryTexture(tex, nullptr, nullptr, &w, &h);
+        const float scale = longest / static_cast<float>(std::max(w, h));
+        const float sw = static_cast<float>(w) * scale;
+        const float sh = static_cast<float>(h) * scale;
+        const SDL_FRect shadow{px - sw / 2.0f + 3.0f, py - sh / 2.0f + 4.0f, sw, sh};
+        SDL_SetTextureColorMod(tex, 0, 0, 0);
+        SDL_SetTextureAlphaMod(tex, 80);
+        SDL_RenderCopyExF(r_, tex, nullptr, &shadow, angle, nullptr, SDL_FLIP_NONE);
+        SDL_SetTextureAlphaMod(tex, 255);
+        SDL_SetTextureColorMod(tex, tint.r, tint.g, tint.b);
+        const SDL_FRect body{px - sw / 2.0f, py - sh / 2.0f, sw, sh};
+        SDL_RenderCopyExF(r_, tex, nullptr, &body, angle, nullptr, SDL_FLIP_NONE);
+        SDL_SetTextureColorMod(tex, 255, 255, 255);
+    };
+
+    // Light scuffs on the asphalt where it hit the road and slid, just before the pile.
+    for (int i = 0; i < 3; ++i) {
+        const int sx = static_cast<int>(x + jitter(i) * 12.0f);
+        const int sy = static_cast<int>(centerY + 12.0f + jitter(i + 3) * 3.0f);
+        fillRect(sx, sy, 1, 8 + static_cast<int>(jitter(i + 6) * 3.0f), SDL_Color{200, 200, 210, 60});
+    }
+
+    SDL_Color shard{};
+    switch (kind) {
+        case 0: {   // tyres: two lying across each other, chunks of rubber
+            piece(debris_[0].get(), x - 7.0f, centerY + jitter(10) * 3.0f, 24.0f, jitter(11) * 40.0);
+            piece(debris_[1].get(), x + 9.0f, centerY - 5.0f + jitter(12) * 3.0f, 20.0f, jitter(13) * 60.0);
+            shard = SDL_Color{30, 30, 34, 255};
+            break;
+        }
+        case 1: {   // barrel on its side, leaking
+            SDL_SetTextureColorMod(oil_.get(), 40, 36, 30);
+            SDL_SetTextureAlphaMod(oil_.get(), 200);
+            const SDL_FRect spill{x - 22.0f + jitter(20) * 4.0f, centerY - 8.0f, 44.0f, 30.0f};
+            SDL_RenderCopyF(r_, oil_.get(), nullptr, &spill);
+            SDL_SetTextureColorMod(oil_.get(), 255, 255, 255);
+            SDL_SetTextureAlphaMod(oil_.get(), 255);
+            piece(debris_[(seed & 1u) ? 2 : 3].get(), x, centerY, 30.0f, 90.0 + jitter(21) * 35.0);
+            shard = SDL_Color{150, 150, 160, 255};   // bits of the lid and hoops
+            break;
+        }
+        default: {   // rocks: one big, two small, gravel around
+            const SDL_Color stone{170, 150, 125, 255};   // warm grey-brown, not the sprite's icy blue
+            piece(debris_[4].get(), x - 3.0f, centerY, 26.0f, jitter(30) * 180.0, stone);
+            piece(debris_[5].get(), x + 12.0f, centerY - 8.0f, 15.0f, jitter(31) * 180.0, stone);
+            piece(debris_[6].get(), x - 13.0f + jitter(32) * 2.0f, centerY - 10.0f, 12.0f, jitter(33) * 180.0, stone);
+            shard = SDL_Color{125, 110, 92, 255};
+            break;
+        }
+    }
+    // Small fragments scattered around the pile, a few further down the road.
+    for (int i = 0; i < 9; ++i) {
+        const int fx = static_cast<int>(x + jitter(40 + i) * 24.0f);
+        const int fy = static_cast<int>(centerY + jitter(60 + i) * 14.0f + (i > 6 ? 18.0f : 0.0f));
+        const int size = 2 + static_cast<int>(hash(static_cast<std::int64_t>(seed) + i) % 3u);
+        fillRect(fx, fy, size, size, shard);
+    }
 }
 
 void Renderer2D::drawWreck(float laneCenterX, float centerY, float lengthMetres) {
@@ -842,7 +907,7 @@ void Renderer2D::drawMenu(const MenuView& menu) {
         SDL_RenderCopy(r_, menuBadge_.get(), nullptr, &dst);
     }
 
-    drawTextCentered("UP/DOWN: CHOOSE   ENTER: SELECT   ESC: QUIT", kCenterX, 456, 1, color::kLabel);
+    drawTextCentered(controls::kMenu, kCenterX, 456, 1, color::kLabel);
 }
 
 void Renderer2D::drawGameOver(int score, int best, bool newBest, int coinsEarned, const char* what, const char* tip) {
@@ -879,9 +944,9 @@ void Renderer2D::drawGameOver(int score, int best, bool newBest, int coinsEarned
     drawTextCentered(buf, kCenterX, 278, 2, color::kTitle);
 
     if (blink(1000)) {
-        drawTextCentered("ENTER: RETRY", kCenterX, 318, 2, color::kText);
+        drawTextCentered(controls::kRetry, kCenterX, 318, 2, color::kText);
     }
-    drawTextCentered("ESC: MENU", kCenterX, 348, 2, color::kLabel);
+    drawTextCentered(controls::kToMenu, kCenterX, 348, 2, color::kLabel);
 }
 
 void Renderer2D::drawShop(const ShopView& shop) {
@@ -920,7 +985,7 @@ void Renderer2D::drawShop(const ShopView& shop) {
         font::drawTextShadow(r_, priceText, kRowX + kRowW - font::textWidth(priceText, 3), y + 4, 3, priceColour);
         y += kRowH;
     }
-    drawTextCentered("UP/DOWN: CHOOSE   ENTER: BUY   ESC: BACK", kCenterX, 456, 1, color::kLabel);
+    drawTextCentered(controls::kShop, kCenterX, 456, 1, color::kLabel);
 }
 
 void Renderer2D::drawGarage(const GarageView& garage) {
@@ -967,7 +1032,7 @@ void Renderer2D::drawGarage(const GarageView& garage) {
             drawTextCentered(buf, cx, 326, 3, car.affordable ? color::kTitle : color::kLocked);
         }
     }
-    drawTextCentered("LEFT/RIGHT: CHOOSE   ENTER: BUY OR DRIVE   ESC: BACK", kCenterX, 440, 1, color::kLabel);
+    drawTextCentered(controls::kGarage, kCenterX, 440, 1, color::kLabel);
 }
 
 void Renderer2D::drawAssistGuide() {
@@ -1004,7 +1069,7 @@ void Renderer2D::drawAssistGuide() {
         font::drawText(r_, e.line2, 100, y + 36, 1, color::kText);
         y += 70;
     }
-    drawTextCentered("ESC: BACK", kCenterX, 456, 1, color::kLabel);
+    drawTextCentered(controls::kBack, kCenterX, 456, 1, color::kLabel);
 }
 
 void Renderer2D::drawPickupHint(float centerX, const char* label, SDL_Color c) {

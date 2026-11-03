@@ -173,7 +173,7 @@ int main(int /*argc*/, char* /*argv*/[]) {
     int penalty = 0;              // points lost for cutting other drivers off
     float penaltyFlash = 0.0f;    // s left of the red score flash
 
-    bool showSensorDebug = true;   // Tab: engineer's view of what the sensors detect
+    bool showSensorDebug = false;   // Tab: engineer's view of what the sensors detect
 
     // AEB feedback: sounds play on stage changes, the warning chime repeats while it lasts.
     AebStage lastAebStage = AebStage::Inactive;
@@ -690,7 +690,11 @@ int main(int /*argc*/, char* /*argv*/[]) {
                 return layout::kEgoScreenY - (position - ego.position()) * layout::kPixelsPerMeter;
             };
             for (const RoadHazards::Debris& d : hazards.debris()) {
-                gfx.drawDebris((d.lateral + 0.5f) * cfg::kLaneWidth, toScreenY(d.position), static_cast<int>(d.kind));
+                if (!RoadHazards::kDebrisEnabled) {
+                    break;
+                }
+                gfx.drawDebris((d.lateral + 0.5f) * cfg::kLaneWidth, toScreenY(d.position), static_cast<int>(d.kind),
+                                   static_cast<unsigned>(d.position));
             }
             for (const RoadHazards::Accident& a : hazards.accidents()) {
                 gfx.drawWreck((static_cast<float>(a.lane) + 0.5f) * cfg::kLaneWidth, toScreenY(a.position),

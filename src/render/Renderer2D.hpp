@@ -38,8 +38,9 @@ public:
     // at the closure (startY, nearest the player) and merge arrows before it. mergeDir: -1 left, +1 right.
     void drawRoadworks(float laneCenterX, float startY, float endY, int mergeDir);
 
-    // Debris on the road (kind 0 tyres, 1 barrel, 2 rock), road-relative x, screen y.
-    void drawDebris(float centerX, float centerY, int kind);
+    // Debris on the road (kind 0 tyres, 1 barrel, 2 rocks), road-relative x, screen y.
+    // seed picks the scatter pattern, so two piles of the same kind don't look identical.
+    void drawDebris(float centerX, float centerY, int kind, unsigned seed);
     // Two wrecked cars across a lane with hazard lights, and a warning triangle before them.
     // centerY = the first wreck (nearest the player); the second stands lengthMetres further ahead.
     void drawWreck(float laneCenterX, float centerY, float lengthMetres);
@@ -109,7 +110,8 @@ private:
     TexturePtr rock_;
     TexturePtr oil_;
     TexturePtr cone_;
-    std::array<TexturePtr, 3> debris_;
+    // Tyres (2), barrels lying down (2), rocks (3).
+    std::array<TexturePtr, 7> debris_;
     TexturePtr barrier_;
     TexturePtr arrow_;
     std::array<TexturePtr, kCarSkinCount> motorcycles_;

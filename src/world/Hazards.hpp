@@ -25,6 +25,7 @@ public:
 
     static constexpr std::size_t kMaxRoadworks = 1;
     static constexpr std::size_t kMaxDebris = 2;
+    static constexpr bool kDebrisEnabled = false;   // off: not on the road, not drawn, not an obstacle
     static constexpr std::size_t kMaxAccidents = 1;
     static constexpr std::size_t kMaxRain = 1;
     static constexpr std::size_t kMaxTunnels = 1;
@@ -154,6 +155,9 @@ public:
             list.push_back(StaticObstacle{static_cast<float>(r.lane), 0.5f, r.start, r.end});
         }
         for (const Debris& d : debris_) {
+            if (!kDebrisEnabled) {
+                break;
+            }
             list.push_back(StaticObstacle{d.lateral, kDebrisHalfWidth, d.position - 0.6f, d.position + 0.6f, true, ObstacleKind::Debris});
         }
         for (const Accident& a : accidents_) {

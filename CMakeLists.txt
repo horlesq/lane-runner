@@ -25,6 +25,13 @@ target_include_directories(lane-runner PRIVATE src)
 # Where the game finds its sprites when run from the build folder.
 target_compile_definitions(lane-runner PRIVATE ASSET_DIR="${CMAKE_SOURCE_DIR}/assets/")
 
+# Handheld build (R36S): on-screen hints name the console buttons instead of keyboard keys.
+#   cmake -B build-r36s -DHANDHELD=ON ...
+option(HANDHELD "Show console button names (A, B, Y) instead of keyboard keys" OFF)
+if(HANDHELD)
+    target_compile_definitions(lane-runner PRIVATE LANE_RUNNER_HANDHELD)
+endif()
+
 # Windows: embed the app icon in the .exe so Explorer and the taskbar show it.
 if(WIN32)
     enable_language(RC)
