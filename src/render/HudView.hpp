@@ -17,6 +17,9 @@ struct AssistView {
 struct HudView {
     int score = 0;
     bool scorePenalty = false;   // flashes the score red (points were just taken off)
+    int combo = 0;               // near-miss combo shown next to the score; 0 = none
+    int shields = 0;             // crashes the player can still survive this run
+    const char* pickupName = nullptr;   // full name of a power-up just collected (shown briefly)
     int best = 0;
     int speedKmh = 0;
     std::array<AssistView, 5> assists{{

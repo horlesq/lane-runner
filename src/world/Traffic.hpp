@@ -62,6 +62,11 @@ public:
 
         // 3. Move, then recycle cars that left the area around the player.
         for (std::size_t i = 0; i < kMaxCars; ++i) {
+            if (i >= activeCount_) {
+                // Not in play yet (difficulty): parked far behind, out of every sensor and out of view.
+                cars_[i].reset(0, ego.speed(), ego.position() - kParkedBehind, cars_[i].variant(), cars_[i].type());
+                continue;
+            }
             drivers_[i].accel = accel[i];
             cars_[i].setAcceleration(accel[i]);
             cars_[i].step(dt);
@@ -75,6 +80,9 @@ public:
     const std::array<Vehicle, kMaxCars>& cars() const { return cars_; }
     const DriverState& driver(std::size_t i) const { return drivers_[i]; }
     int laneChanges() const { return laneChanges_; }   // total started, for tests and statistics
+
+    // Difficulty: how many of the kMaxCars vehicles are on the road. Parked ones join in when raised.
+    void setActiveCount(std::size_t n) { activeCount_ = std::min(n, kMaxCars); }
 
     // How many times since the last call a driver had to brake hard because the player cut them off.
     int takeCutOffs() {
@@ -105,6 +113,7 @@ private:
     static constexpr float kMotorcycleChance = 0.12f;      // share of new vehicles that are motorcycles
     static constexpr float kCutOffDecel = 3.5f;            // m/s^2; braking this hard because of the player = cut off
     static constexpr float kHonkCooldown = 4.0f;           // s
+    static constexpr float kParkedBehind = 5000.0f;        // m; where inactive vehicles wait
 
     // Another road user found in a lane, with what is needed to predict its reaction.
     struct Other {
@@ -403,4 +412,5 @@ private:
     std::mt19937 rng_{42};   // fixed seed: the same traffic every run, so behaviour is reproducible
     int laneChanges_ = 0;
     int cutOffs_ = 0;
+    std::size_t activeCount_ = kMaxCars;
 };

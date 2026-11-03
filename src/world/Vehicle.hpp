@@ -25,9 +25,17 @@ class Vehicle {
         float speed() const { return speed_; }
         VehicleType type() const { return type_; }
 
-        // Hitbox: a motorcycle is much shorter and narrower than a car.
-        float length() const { return type_ == VehicleType::Motorcycle ? vehicle_size::kMotorcycleLength : cfg::kCarLength; }
-        float width() const { return type_ == VehicleType::Motorcycle ? vehicle_size::kMotorcycleWidth : cfg::kCarWidthLanes; }
+        // Hitbox: a motorcycle is much shorter and narrower than a car; a car can also have its own size.
+        float length() const {
+            return customLength_ > 0.0f ? customLength_ : (type_ == VehicleType::Motorcycle ? vehicle_size::kMotorcycleLength : cfg::kCarLength);
+        }
+        float width() const {
+            return customWidth_ > 0.0f ? customWidth_ : (type_ == VehicleType::Motorcycle ? vehicle_size::kMotorcycleWidth : cfg::kCarWidthLanes);
+        }
+        void setDimensions(float length, float width) {   // e.g. the player's chosen car
+            customLength_ = length;
+            customWidth_ = width;
+        }
 
         void setAcceleration(float accel) { accel_ = accel; }
 
@@ -106,6 +114,8 @@ class Vehicle {
         bool hitCurb_;
         float grip_;           // 0..1
         VehicleType type_;
+        float customLength_ = 0.0f;   // 0 = size of the type
+        float customWidth_ = 0.0f;
 };
 
 // Bumper-to-bumper distance from the rear vehicle's front to the front vehicle's back.

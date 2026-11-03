@@ -2,6 +2,7 @@
 #include <array>
 #include <cmath>
 #include <cstdio>
+#include <fstream>
 #include <memory>
 #include <optional>
 #include <string>
@@ -16,8 +17,11 @@
 #include "world/DriverModel.hpp"
 #include "world/Lead.hpp"
 #include "world/Oil.hpp"
+#include "world/PowerUps.hpp"
 #include "core/FixedVector.hpp"
 #include "perception/ObjectList.hpp"
+#include "game/NearMiss.hpp"
+#include "game/Progress.hpp"
 #include "perception/Fusion.hpp"
 #include "sensors/Camera.hpp"
 #include "sensors/Radar.hpp"
@@ -710,6 +714,169 @@ static void testLkaDegradedWithoutLanes() {
     CHECK(lka.state() == LkaState::Active);
 }
 
+// --- Gameplay: shop, saving, near misses, power-ups, difficulty ---
+
+// Buying: coins are spent, levels go up, a maxed item or missing coins changes nothing.
+static void testShopBuying() {
+    Progress p;
+    p.coins = 100;
+    CHECK(p.buy(ShopItem::LongerAssists));                  // costs 40
+    CHECK(p.coins == 60 && p.level(ShopItem::LongerAssists) == 1);
+    CHECK(near(p.powerUpSeconds(), 16.0f));
+    CHECK(!p.buy(ShopItem::LongerAssists));                 // next level costs 90: can't afford
+    CHECK(p.coins == 60 && p.level(ShopItem::LongerAssists) == 1);
+
+    p.coins = 1000;
+    CHECK(p.buy(ShopItem::StartWithAcc) && p.startsWithAcc());
+    CHECK(p.nextPrice(ShopItem::StartWithAcc) == 0);        // maxed
+    CHECK(!p.buy(ShopItem::StartWithAcc));
+}
+
+// Saving and loading round-trips; a tampered level is clamped to the item's maximum.
+static void testProgressSaveLoad() {
+    const std::string path = "test-progress.txt";
+    Progress saved;
+    saved.coins = 123;
+    CHECK(saved.finishRun(2600) == 52);    // 2600 / 50 coins
+    saved.buy(ShopItem::AebSaves);
+    CHECK(saved.save(path));
+
+    Progress loaded;
+    CHECK(loaded.load(path));
+    CHECK(loaded.best == 2600 && loaded.coins == saved.coins && loaded.level(ShopItem::AebSaves) == 1);
+    CHECK(loaded.startingAebSaves() == 2);
+
+    std::ofstream(path) << "level1=99\n";
+    Progress tampered;
+    tampered.load(path);
+    CHECK(tampered.level(ShopItem::AebSaves) == kShopOffers[1].maxLevel);
+    std::remove(path.c_str());
+
+    Progress fresh;
+    CHECK(!fresh.load("does-not-exist.txt") && fresh.coins == 0);
+}
+
+// Passing a car close and fast scores; passing it far away doesn't. Chained passes raise the combo.
+static void testNearMiss() {
+    NearMissTracker<2> tracker;
+    Vehicle ego(1, 30.0f, 0.0f);
+    std::array<Vehicle, 2> cars{};
+    cars[0].reset(2, 20.0f, 6.0f, 0);   // next lane (edge gap 0.55 lanes): not close enough
+    cars[1].reset(1, 20.0f, 20.0f, 0);  // will be moved next to the ego below
+    int points = 0;
+    for (int i = 0; i < 60; ++i) {      // 1.2 s at +10 m/s: the ego passes car 0
+        ego.step(0.02f);
+        cars[0].step(0.02f);
+        points += tracker.update(0.02f, ego, cars);
+    }
+    CHECK(points == 0);
+
+    // Now the player drifts towards the next lane before overtaking a car there: about 0.2 lanes
+    // between the two bodies when passing. That's a near miss.
+    NearMissTracker<1> close;
+    Vehicle me(1, 30.0f, 0.0f);
+    me.enableFreeSteering();
+    std::array<Vehicle, 1> one{};
+    one[0].reset(2, 20.0f, 12.0f, 0);   // car in the next lane, 12 m ahead, 10 m/s slower
+    int scored = 0;
+    for (int i = 0; i < 150; ++i) {
+        me.steer(me.lateral() < 1.25f ? 1.0f : 0.0f);
+        me.step(0.02f);
+        one[0].step(0.02f);
+        scored += close.update(0.02f, me, one);
+    }
+    const float edgeGap = std::abs(one[0].lateral() - me.lateral()) - (one[0].width() + me.width()) / 2.0f;
+    CHECK(edgeGap > 0.0f && edgeGap < NearMissTracker<1>::kMaxEdgeGap);   // the setup really is a close pass
+    CHECK(scored == NearMissTracker<1>::kBasePoints && close.combo() == 1);
+}
+
+// Driving through a pick-up collects it.
+static void testPowerUpCollected() {
+    PowerUpField field;
+    const PowerUpField::Pickup first = field.pickups()[0];
+    const Vehicle ego(static_cast<int>(first.lateral), 20.0f, first.position);
+    const std::optional<PowerUp> got = field.step(ego);
+    CHECK(got.has_value() && *got == first.type);
+    CHECK(!field.step(ego).has_value());   // it's gone (recycled further ahead)
+}
+
+// Difficulty: only the active vehicles are on the road; the rest wait far behind, out of reach.
+static void testTrafficActiveCount() {
+    Vehicle ego(1, 20.0f, 0.0f);
+    Traffic traffic;
+    traffic.setActiveCount(3);
+    for (int i = 0; i < 10; ++i) {
+        ego.step(0.02f);
+        traffic.step(0.02f, ego);
+    }
+    int nearby = 0;
+    for (const Vehicle& v : traffic.cars()) {
+        nearby += std::abs(v.position() - ego.position()) < 200.0f ? 1 : 0;
+    }
+    CHECK(nearby == 3);
+}
+
+// Garage: buying a car spends coins and drives it; owned cars switch for free; the choice is saved,
+// and a save file can't select a car you don't own.
+static void testGarage() {
+    Progress p;
+    CHECK(p.car().name == kCars[0].name && p.ownsCar(0));
+    CHECK(!p.chooseCar(3));                       // sports car: 250 coins, have 0
+    p.coins = 400;
+    CHECK(p.chooseCar(4));                        // pickup: 300
+    CHECK(p.coins == 100 && p.ownsCar(4) && p.selectedCar == 4);
+    CHECK(p.shieldsPerRun() == 1);                // the pickup survives one crash
+    CHECK(p.chooseCar(0) && p.coins == 100);      // back to the sedan: owned, free
+
+    const std::string path = "test-garage.txt";
+    p.chooseCar(4);
+    p.save(path);
+    Progress loaded;
+    loaded.load(path);
+    CHECK(loaded.ownsCar(4) && loaded.selectedCar == 4);
+
+    std::ofstream(path) << "cars=1\ncar=3\n";     // claims to drive a car it doesn't own
+    Progress cheat;
+    cheat.load(path);
+    CHECK(cheat.selectedCar == 0);
+    std::remove(path.c_str());
+}
+
+// New shop items: coin bonus multiplies the coins of a run; shield adds to the car's shields.
+static void testNewShopItems() {
+    Progress p;
+    p.coins = 10000;
+    CHECK(p.buy(ShopItem::CoinBonus) && p.buy(ShopItem::CoinBonus));
+    const int before = p.coins;
+    CHECK(p.finishRun(1000) == 30);               // 1000 / 50 = 20 coins x 1.5
+    CHECK(p.coins == before + 30);
+    CHECK(p.buy(ShopItem::Shield) && p.shieldsPerRun() == 1);
+    CHECK(p.buy(ShopItem::Magnet) && p.hasMagnet());
+}
+
+// Magnet: a pick-up two lanes over slides into the player's lane as they approach.
+static void testMagnetPullsPickups() {
+    PowerUpField field;
+    const PowerUpField::Pickup target = field.pickups()[0];
+    const int myLane = target.lateral < 1.5f ? 3 : 0;   // a far lane
+    Vehicle ego(myLane, 20.0f, target.position - 35.0f);
+    bool collected = false;
+    for (int i = 0; i < 150 && !collected; ++i) {        // 3 s, driving towards it
+        ego.step(0.02f);
+        collected = field.step(ego, 0.02f, true).has_value();
+    }
+    CHECK(collected);
+
+    PowerUpField noMagnet;
+    Vehicle ego2(myLane, 20.0f, target.position - 35.0f);
+    bool collected2 = false;
+    for (int i = 0; i < 150 && !collected2; ++i) {
+        ego2.step(0.02f);
+        collected2 = noMagnet.step(ego2, 0.02f, false).has_value();
+    }
+    CHECK(!collected2);
+}
+
 int main() {
     testProportionalOnly();
     testOutputIsClamped();
@@ -748,6 +915,14 @@ int main() {
     testFusionRemovesBridgeGhost();
     testFusionKeepsRealCars();
     testLkaDegradedWithoutLanes();
+    testShopBuying();
+    testProgressSaveLoad();
+    testNearMiss();
+    testPowerUpCollected();
+    testTrafficActiveCount();
+    testGarage();
+    testNewShopItems();
+    testMagnetPullsPickups();
 
     std::printf(g_failures == 0 ? "All tests passed\n" : "%d test(s) failed\n", g_failures);
     return g_failures == 0 ? 0 : 1;

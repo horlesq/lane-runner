@@ -224,6 +224,11 @@ void Renderer2D::drawPanel(const HudView& hud) {
     font::drawTextShadow(r_, "LANE RUNNER", left, 14, 2, color::kTitle);
 
     font::drawText(r_, "SCORE", left, 44, 1, color::kLabel);
+    if (hud.combo > 1) {
+        char comboText[16];
+        std::snprintf(comboText, sizeof comboText, "COMBO X%d", hud.combo);
+        font::drawText(r_, comboText, right - font::textWidth(comboText, 1), 44, 1, color::kTitle);
+    }
     std::snprintf(buf, sizeof buf, "%06d", hud.score);
     font::drawTextShadow(r_, buf, left, 56, 3, hud.scorePenalty && blink(200) ? color::kCrash : color::kText);
 
@@ -232,12 +237,21 @@ void Renderer2D::drawPanel(const HudView& hud) {
     font::drawText(r_, buf, left, 100, 2, color::kLabel);
 
     font::drawText(r_, "SPEED", left, 126, 1, color::kLabel);
+    if (hud.shields > 0) {
+        char shieldText[16];
+        std::snprintf(shieldText, sizeof shieldText, "SHIELD X%d", hud.shields);
+        font::drawText(r_, shieldText, right - font::textWidth(shieldText, 1), 126, 1, color::kActive);
+    }
     std::snprintf(buf, sizeof buf, "%3d", hud.speedKmh);
     font::drawTextShadow(r_, buf, left, 138, 3, color::kText);
     font::drawText(r_, "KM/H", left + font::textWidth(buf, 3) + 6, 152, 1, color::kLabel);
 
     fillRect(left, 172, right - left, 2, color::kPanelEdge);
-    font::drawText(r_, "ASSISTS", left, 182, 1, color::kLabel);
+    if (hud.pickupName) {
+        font::drawText(r_, hud.pickupName, left, 182, 1, color::kTitle);   // just collected: full name
+    } else {
+        font::drawText(r_, "ASSISTS", left, 182, 1, color::kLabel);
+    }
 
     int y = 196;
     for (const AssistView& a : hud.assists) {
@@ -289,7 +303,6 @@ void Renderer2D::drawPanel(const HudView& hud) {
         font::drawText(r_, arrows, right - font::textWidth(arrows, 2), 410, 2, color::kDegraded);
     }
 
-    font::drawText(r_, "A:ACC L:LKA B:BSW F:FUS", left, cfg::kScreenHeight - 30, 1, color::kLocked);
     font::drawText(r_, "TAB: DEBUG  ESC: MENU", left, cfg::kScreenHeight - 18, 1, color::kLocked);
 }
 
@@ -622,14 +635,14 @@ void Renderer2D::drawMenu(const MenuView& menu) {
     font::drawTextShadow(r_, "LANE RUNNER", kCenterX - font::textWidth("LANE RUNNER", 6) / 2, 70, 6, color::kTitle);
     drawTextCentered("ADAS HIGHWAY CHALLENGE", kCenterX, 126, 2, color::kLabel);
 
-    int y = 196;
+    int y = 164;
     for (std::size_t i = 0; i < menu.items.size(); ++i) {
         const MenuItemView& item = menu.items[i];
         const bool selected = (i == menu.selected);
         const int width = font::textWidth(item.label, 3);
 
         if (selected) {
-            fillRect(kCenterX - 150, y - 8, 300, 37, color::kHighlight);
+            fillRect(kCenterX - 150, y - 7, 300, 35, color::kHighlight);
             font::drawText(r_, ">", kCenterX - 130, y, 3, color::kTitle);
             font::drawText(r_, "<", kCenterX + 130 - font::textWidth("<", 3), y, 3, color::kTitle);
         }
@@ -642,17 +655,17 @@ void Renderer2D::drawMenu(const MenuView& menu) {
         if (!item.enabled) {
             font::drawText(r_, "SOON", kCenterX + width / 2 + 8, y - 4, 1, color::kDegraded);
         }
-        y += 46;
+        y += 38;
     }
 
     char buf[32];
-    std::snprintf(buf, sizeof buf, "BEST %06d", menu.best);
-    drawTextCentered(buf, kCenterX, 352, 2, color::kText);
+    std::snprintf(buf, sizeof buf, "BEST %06d   COINS %d", menu.best, menu.coins);
+    drawTextCentered(buf, kCenterX, 362, 2, color::kText);
 
     if (menuBadge_) {
         // Pixel-art badge with its own dark outline, drawn at the menu text's 2x pixel size.
         constexpr int kScale = 2;
-        constexpr int kTop = 386;
+        constexpr int kTop = 392;
         int w = 0, h = 0;
         SDL_QueryTexture(menuBadge_.get(), nullptr, nullptr, &w, &h);
         const int bw = w * kScale, bh = h * kScale;
@@ -668,10 +681,10 @@ void Renderer2D::drawMenu(const MenuView& menu) {
         SDL_RenderCopy(r_, menuBadge_.get(), nullptr, &dst);
     }
 
-    drawTextCentered("UP/DOWN: CHOOSE   ENTER: SELECT   ESC: QUIT", kCenterX, 448, 1, color::kLabel);
+    drawTextCentered("UP/DOWN: CHOOSE   ENTER: SELECT   ESC: QUIT", kCenterX, 456, 1, color::kLabel);
 }
 
-void Renderer2D::drawGameOver(int score, int best, bool newBest) {
+void Renderer2D::drawGameOver(int score, int best, bool newBest, int coinsEarned) {
     constexpr int kCenterX = layout::kPanelX / 2;   // centred over the road, the panel stays visible
     fillRect(0, 0, layout::kPanelX, cfg::kScreenHeight, color::kDim);
 
@@ -691,10 +704,154 @@ void Renderer2D::drawGameOver(int score, int best, bool newBest) {
         drawTextCentered(buf, kCenterX, 250, 2, color::kLabel);
     }
 
+    std::snprintf(buf, sizeof buf, "+%d COINS", coinsEarned);
+    drawTextCentered(buf, kCenterX, 278, 2, color::kTitle);
+
     if (blink(1000)) {
-        drawTextCentered("ENTER: RETRY", kCenterX, 310, 2, color::kText);
+        drawTextCentered("ENTER: RETRY", kCenterX, 318, 2, color::kText);
     }
-    drawTextCentered("ESC: MENU", kCenterX, 340, 2, color::kLabel);
+    drawTextCentered("ESC: MENU", kCenterX, 348, 2, color::kLabel);
+}
+
+void Renderer2D::drawShop(const ShopView& shop) {
+    constexpr int kCenterX = cfg::kScreenWidth / 2;
+    fillRect(0, 0, cfg::kScreenWidth, cfg::kScreenHeight, color::kDim);
+    font::drawTextShadow(r_, "SHOP", kCenterX - font::textWidth("SHOP", 4) / 2, 22, 4, color::kTitle);
+
+    char buf[48];
+    std::snprintf(buf, sizeof buf, "COINS %d", shop.coins);
+    drawTextCentered(buf, kCenterX, 60, 2, color::kText);
+
+    constexpr int kRowX = 70;
+    constexpr int kRowW = cfg::kScreenWidth - 2 * kRowX;
+    constexpr int kRowH = 50;
+    int y = 92;
+    for (std::size_t i = 0; i <= shop.rows.size(); ++i) {
+        const bool selected = i == shop.selected;
+        if (selected) {
+            fillRect(kRowX - 10, y - 6, kRowW + 20, kRowH - 4, color::kHighlight);
+        }
+        if (i == shop.rows.size()) {
+            drawTextCentered("BACK", kCenterX, y + 6, 3, selected ? color::kTitle : color::kText);
+            break;
+        }
+        const ShopRowView& row = shop.rows[i];
+        font::drawTextShadow(r_, row.name, kRowX, y, 2, selected ? color::kTitle : color::kText);
+        font::drawText(r_, row.description, kRowX, y + 20, 1, color::kLabel);
+        for (int lvl = 0; lvl < row.maxLevel; ++lvl) {   // level pips: filled = bought
+            fillRect(kRowX + 250 + lvl * 16, y + 4, 12, 8, lvl < row.level ? color::kActive : color::kBarBack);
+        }
+        const char* priceText = row.price == 0 ? "MAX" : buf;
+        if (row.price != 0) {
+            std::snprintf(buf, sizeof buf, "%d", row.price);
+        }
+        const SDL_Color priceColour = row.price == 0 ? color::kActive : (row.affordable ? color::kTitle : color::kLocked);
+        font::drawTextShadow(r_, priceText, kRowX + kRowW - font::textWidth(priceText, 3), y + 4, 3, priceColour);
+        y += kRowH;
+    }
+    drawTextCentered("UP/DOWN: CHOOSE   ENTER: BUY   ESC: BACK", kCenterX, 456, 1, color::kLabel);
+}
+
+void Renderer2D::drawGarage(const GarageView& garage) {
+    constexpr int kCenterX = cfg::kScreenWidth / 2;
+    fillRect(0, 0, cfg::kScreenWidth, cfg::kScreenHeight, color::kDim);
+    font::drawTextShadow(r_, "GARAGE", kCenterX - font::textWidth("GARAGE", 4) / 2, 30, 4, color::kTitle);
+
+    char buf[32];
+    std::snprintf(buf, sizeof buf, "COINS %d", garage.coins);
+    drawTextCentered(buf, kCenterX, 72, 2, color::kText);
+
+    constexpr int kSlotW = cfg::kScreenWidth / 5;
+    for (std::size_t i = 0; i < garage.cars.size(); ++i) {
+        const GarageCarView& car = garage.cars[i];
+        const int cx = kSlotW * static_cast<int>(i) + kSlotW / 2;
+        const bool selected = i == garage.selected;
+        if (selected) {
+            fillRect(cx - kSlotW / 2 + 4, 110, kSlotW - 8, 300, color::kHighlight);
+        }
+        // The car itself, in the player's blue, on a little plinth.
+        fillRect(cx - 34, 236, 68, 6, color::kPanelEdge);
+        const CarSprite& sprite = cars_[static_cast<std::size_t>(CarSkin::Blue)][static_cast<std::size_t>(car.spriteModel) % kCarModelCount];
+        const float h = static_cast<float>(layout::kCarHeight) * sprite.lengthScale;
+        const float carY = 236.0f - h / 2.0f - 4.0f;
+        if (car.owned) {
+            drawSprite(sprite.texture.get(), static_cast<float>(cx), carY, static_cast<float>(layout::kCarWidth), h, true);
+        } else {
+            SDL_SetTextureColorMod(sprite.texture.get(), 80, 86, 100);   // not yours yet: greyed out, no shadow
+            drawSprite(sprite.texture.get(), static_cast<float>(cx), carY, static_cast<float>(layout::kCarWidth), h, false);
+            SDL_SetTextureColorMod(sprite.texture.get(), 255, 255, 255);
+        }
+
+        drawTextCentered(car.name, cx, 256, 2, selected ? color::kTitle : color::kText);
+        drawTextCentered(car.strength, cx, 282, 1, color::kActive);
+        if (car.weakness[0] != '-') {
+            drawTextCentered(car.weakness, cx, 296, 1, color::kDegraded);
+        }
+        if (car.inUse) {
+            drawTextCentered("IN USE", cx, 330, 2, color::kActive);
+        } else if (car.owned) {
+            drawTextCentered("OWNED", cx, 330, 2, color::kText);
+        } else {
+            std::snprintf(buf, sizeof buf, "%d", car.price);
+            drawTextCentered(buf, cx, 326, 3, car.affordable ? color::kTitle : color::kLocked);
+        }
+    }
+    drawTextCentered("LEFT/RIGHT: CHOOSE   ENTER: BUY OR DRIVE   ESC: BACK", kCenterX, 440, 1, color::kLabel);
+}
+
+void Renderer2D::drawAssistGuide() {
+    struct Entry {
+        const char* badge;
+        SDL_Color colour;
+        const char* name;
+        const char* line1;
+        const char* line2;
+    };
+    const std::array<Entry, 5> entries{{
+        {"ACC", SDL_Color{46, 204, 113, 255}, "ADAPTIVE CRUISE CONTROL",
+         "HOLDS YOUR SPEED AND KEEPS A SAFE GAP", "TO THE CAR AHEAD. RESUMES AFTER YOU BRAKE."},
+        {"AEB", SDL_Color{230, 70, 60, 255}, "AUTOMATIC EMERGENCY BRAKING",
+         "BRAKES HARD WHEN A CRASH IS SECONDS AWAY.", "EACH STOP USES ONE SAVE. ALWAYS ON."},
+        {"LKA", SDL_Color{60, 170, 240, 255}, "LANE KEEPING ASSIST",
+         "KEEPS YOU IN THE MIDDLE OF YOUR LANE", "AGAINST WIND. NEEDS THE CAMERA: NOT IN FOG."},
+        {"BSW", SDL_Color{243, 156, 18, 255}, "BLIND SPOT WARNING",
+         "WARNS ABOUT CARS BESIDE AND BEHIND YOU", "AND BLOCKS LANE CHANGES INTO THEM."},
+        {"FUS", SDL_Color{170, 100, 230, 255}, "SENSOR FUSION",
+         "RADAR + CAMERA: IGNORES FAKE RADAR ECHOES", "UNDER BRIDGES, SO NO SURPRISE BRAKING."},
+    }};
+
+    constexpr int kCenterX = cfg::kScreenWidth / 2;
+    fillRect(0, 0, cfg::kScreenWidth, cfg::kScreenHeight, color::kDim);
+    font::drawTextShadow(r_, "ASSISTS", kCenterX - font::textWidth("ASSISTS", 4) / 2, 18, 4, color::kTitle);
+    drawTextCentered("DRIVE THROUGH A POWER-UP: THE ASSIST SWITCHES ON BY ITSELF", kCenterX, 56, 1, color::kTitle);
+
+    int y = 84;
+    for (const Entry& e : entries) {
+        drawPickup(56.0f - static_cast<float>(layout::kRoadX), static_cast<float>(y + 22), e.badge, e.colour);
+        font::drawTextShadow(r_, e.name, 100, y + 4, 2, e.colour);
+        font::drawText(r_, e.line1, 100, y + 24, 1, color::kText);
+        font::drawText(r_, e.line2, 100, y + 36, 1, color::kText);
+        y += 70;
+    }
+    drawTextCentered("ESC: BACK", kCenterX, 456, 1, color::kLabel);
+}
+
+void Renderer2D::drawPickup(float centerX, float centerY, const char* label, SDL_Color c) {
+    // Pulsing glow, then a solid disc with a dark rim and the label: readable at speed.
+    const float pulse = 0.5f + 0.5f * std::sin(static_cast<float>(SDL_GetTicks()) / 160.0f);
+    const float cx = static_cast<float>(layout::kRoadX) + centerX;
+    const auto disc = [&](float radius, SDL_Color colour) {
+        for (float dy = -radius; dy <= radius; dy += 1.0f) {
+            const float half = std::sqrt(std::max(radius * radius - dy * dy, 0.0f));
+            fillRect(static_cast<int>(cx - half), static_cast<int>(centerY + dy), static_cast<int>(2.0f * half), 1, colour);
+        }
+    };
+    disc(26.0f + 4.0f * pulse, SDL_Color{c.r, c.g, c.b, static_cast<Uint8>(50 + 50 * pulse)});
+    disc(20.0f, color::kPanel);
+    disc(18.0f, c);
+    const int scale = std::char_traits<char>::length(label) > 3 ? 1 : 2;
+    font::drawTextShadow(r_, label, static_cast<int>(cx) - font::textWidth(label, scale) / 2,
+                         static_cast<int>(centerY) - 7 * scale / 2, scale, color::kText);
 }
 
 void Renderer2D::drawTextCentered(const char* text, int centerX, int y, int scale, SDL_Color c) {

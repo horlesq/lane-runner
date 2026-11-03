@@ -213,6 +213,22 @@ void Audio::buildClips() {
         }
     }
 
+    // Power-up: quick bright arpeggio. Near miss: short rising "whoop".
+    for (float freq : {784.0f, 988.0f, 1319.0f}) {
+        appendTone(clip(Sfx::PowerUp), sr, freq, 0.05f, 0.14f, 12.0f);
+    }
+    {
+        std::vector<float>& c = clip(Sfx::NearMiss);
+        const std::size_t n = frames(sr, 0.16f);
+        float phase = 0.0f;
+        for (std::size_t i = 0; i < n; ++i) {
+            const float x = static_cast<float>(i) / static_cast<float>(n);
+            phase = std::fmod(phase + (500.0f + 1100.0f * x) / static_cast<float>(sr), 1.0f);
+            const float square = phase < 0.5f ? 1.0f : -1.0f;
+            c.push_back(square * 0.11f * std::sin(kPi * x));
+        }
+    }
+
     // Skid on oil: a lower, wobbling tyre slip with a wet hiss, sliding down in pitch.
     {
         std::vector<float>& c = clip(Sfx::Skid);

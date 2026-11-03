@@ -39,6 +39,9 @@ public:
     // Fog bank between two screen heights; hides everything inside it.
     void drawFog(float topY, float bottomY);
 
+    // Power-up badge on the road: a pulsing disc with a short label (road-relative x, screen y).
+    void drawPickup(float centerX, float centerY, const char* label, SDL_Color color);
+
     // Oil patch on the road (drawn under the cars). centerX road-relative, centerY screen pixels.
     void drawOil(float centerX, float centerY);
 
@@ -66,7 +69,10 @@ public:
 
     // Full-screen overlays, drawn on top of the road and cars.
     void drawMenu(const MenuView& menu);
-    void drawGameOver(int score, int best, bool newBest);
+    void drawShop(const ShopView& shop);
+    void drawGarage(const GarageView& garage);
+    void drawAssistGuide();   // what each power-up does, in plain words
+    void drawGameOver(int score, int best, bool newBest, int coinsEarned);
 
 private:
     void drawScenery(float scrollPx);

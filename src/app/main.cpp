@@ -14,6 +14,8 @@
 #include "functions/Aeb.hpp"
 #include "functions/Bsw.hpp"
 #include "functions/Lka.hpp"
+#include "game/NearMiss.hpp"
+#include "game/Progress.hpp"
 #include "platform/SdlContext.hpp"
 #include "platform/Window.hpp"
 #include "render/Layout.hpp"
@@ -28,19 +30,21 @@
 #include "world/Vehicle.hpp"
 #include "world/Hazards.hpp"
 #include "world/Oil.hpp"
+#include "world/PowerUps.hpp"
 #include "world/Wind.hpp"
 
 // ASSET_DIR is injected by CMake; wrap the macro in a typed constant once and use that.
 constexpr const char* kAssetDir = ASSET_DIR;
 
-enum class Screen : std::uint8_t { Menu, Playing, GameOver };
+enum class Screen : std::uint8_t { Menu, Garage, Shop, Guide, Playing, GameOver };
 
 // Menu entries, in the order of MenuView::items.
 constexpr std::size_t kMenuStart = 0;
-constexpr std::size_t kMenuShop = 1;
-constexpr std::size_t kMenuQuit = 2;
+constexpr std::size_t kMenuGarage = 1;
+constexpr std::size_t kMenuShop = 2;
+constexpr std::size_t kMenuAssists = 3;
+constexpr std::size_t kMenuQuit = 4;
 static_assert(kMenuQuit < MenuView{}.items.size(), "Menu indices out of range");
-static_assert(kMenuShop != kMenuStart, "Menu indices must be distinct");
 
 constexpr float kStartSpeed = 20.0f;   // m/s
 constexpr float kMenuSpeed = 22.0f;    // m/s, camera speed behind the title menu
@@ -51,7 +55,12 @@ constexpr float kPenaltyFlashTime = 1.2f;   // s the score flashes red
 constexpr float kBrakeLightDecel = 1.5f;    // m/s^2; NPCs braking harder than this show brake lights
 constexpr float kGhostMinDistance = 8.0f;    // m; the radar sees a bridge ghost from this close...
 constexpr float kGhostMaxDistance = 50.0f;   // ...out to this far
-constexpr float kDriverSteerRate = 2.0f;   // lanes/s while ← or → is held; stronger than LKA's 1.2
+constexpr std::size_t kStartTraffic = 5;     // vehicles on the road at the start of a run...
+constexpr float kMetresPerExtraCar = 600.0f; // ...one more every 600 m, up to Traffic::kMaxCars
+constexpr int kMaxAebSaves = 3;
+constexpr float kShieldTime = 2.0f;         // s of invulnerability after a shield absorbs a crash
+constexpr float kAccAutoResume = 0.8f;      // s after releasing the brake before ACC takes over again
+constexpr float kPickupNameTime = 2.5f;     // s the full name of a collected power-up stays in the panel
 
 int main(int /*argc*/, char* /*argv*/[]) {
     // --- Platform setup (destroyed in reverse order when main returns) ---
@@ -126,9 +135,35 @@ int main(int /*argc*/, char* /*argv*/[]) {
     OilField oil;
     MenuView menu;
     HudView hud;
-    int best = 0;
+    // Progress (best score, coins, upgrades) lives in a small file in the user's settings folder.
+    std::string savePath = "lanerunner-save.txt";
+    if (char* prefDir = SDL_GetPrefPath("LaneRunner", "LaneRunner")) {
+        savePath = std::string(prefDir) + "save.txt";
+        SDL_free(prefDir);
+    }
+    Progress progress;
+    progress.load(savePath);
+    menu.best = progress.best;
+    menu.coins = progress.coins;
+    std::size_t shopSelected = 0;
+    std::size_t garageSelected = 0;
+    int shields = 0;              // crashes the player can still survive this run
+    float invulnerable = 0.0f;    // s left after a shield took a hit
+    const char* pickupName = nullptr;
+    float pickupNameTime = 0.0f;
+    float accResumeTimer = 0.0f;
+
     int lastScore = 0;
     bool newBest = false;
+    int coinsEarned = 0;
+    int bonus = 0;                // near-miss points this run
+
+    // Power-ups: seconds of charge left per assist; AEB works on saves instead.
+    PowerUpField powerUps;
+    std::array<float, 4> charge{};   // indexed by PowerUp::Acc, Lka, Bsw, Fusion
+    const auto chargeOf = [&](PowerUp p) -> float& { return charge[static_cast<std::size_t>(p)]; };
+    int aebSaves = 0;
+    NearMissTracker<Traffic::kMaxCars> nearMiss;
     int penalty = 0;              // points lost for cutting other drivers off
     float penaltyFlash = 0.0f;    // s left of the red score flash
 
@@ -142,7 +177,34 @@ int main(int /*argc*/, char* /*argv*/[]) {
     BswState lastBswState = BswState::Off;
 
     const auto scoreOf = [&](const Vehicle& v) {
-        return std::max(0, static_cast<int>(v.position() * layout::kPixelsPerMeter / 10.0f) - penalty);
+        return std::max(0, static_cast<int>(v.position() * layout::kPixelsPerMeter / 10.0f) + bonus - penalty);
+    };
+
+    // Switch an assist off when its charge runs out (a fresh object is the "Off" state).
+    const auto dischargeAssist = [&](PowerUp p) {
+        switch (p) {
+            case PowerUp::Acc:     acc = Acc();       break;
+            case PowerUp::Lka:     lka = Lka();       break;
+            case PowerUp::Bsw:     bsw = Bsw();       break;
+            case PowerUp::Fusion:  fusionOn = false;  break;
+            case PowerUp::AebSave:                    break;
+        }
+    };
+
+    // Collecting a power-up: refill its charge and switch it on.
+    const auto chargeAssist = [&](PowerUp p) {
+        if (p == PowerUp::AebSave) {
+            aebSaves = std::min(aebSaves + 1, kMaxAebSaves);
+            return;
+        }
+        chargeOf(p) = progress.powerUpSeconds();
+        switch (p) {
+            case PowerUp::Acc:     if (acc.state() == AccState::Off) { acc.toggle(ego.speed()); }  break;
+            case PowerUp::Lka:     if (lka.state() == LkaState::Off) { lka.toggle(); }             break;
+            case PowerUp::Bsw:     if (bsw.state() == BswState::Off) { bsw.toggle(); }             break;
+            case PowerUp::Fusion:  fusionOn = true;                                                break;
+            case PowerUp::AebSave:                                                                  break;
+        }
     };
 
     const auto startRun = [&]() {
@@ -158,6 +220,19 @@ int main(int /*argc*/, char* /*argv*/[]) {
         fusionOn = false;
         penalty = 0;
         penaltyFlash = 0.0f;
+        bonus = 0;
+        nearMiss = NearMissTracker<Traffic::kMaxCars>();
+        powerUps = PowerUpField();
+        charge = {};
+        aebSaves = progress.startingAebSaves();
+        ego.setDimensions(progress.car().length, progress.car().width);
+        shields = progress.shieldsPerRun();
+        invulnerable = 0.0f;
+        pickupName = nullptr;
+        traffic.setActiveCount(kStartTraffic);
+        if (progress.startsWithAcc()) {
+            chargeAssist(PowerUp::Acc);
+        }
         wind = Wind();
         oil = OilField();
         lastAebStage = AebStage::Inactive;
@@ -172,7 +247,8 @@ int main(int /*argc*/, char* /*argv*/[]) {
         aeb = Aeb();
         lka = Lka();
         bsw = Bsw();
-        menu.best = best;
+        menu.best = progress.best;
+        menu.coins = progress.coins;
         screen = Screen::Menu;
     };
 
@@ -209,6 +285,17 @@ int main(int /*argc*/, char* /*argv*/[]) {
                             audio.play(Sfx::Denied);
                         } else if (menu.selected == kMenuStart) {
                             startRun();
+                        } else if (menu.selected == kMenuShop) {
+                            shopSelected = 0;
+                            screen = Screen::Shop;
+                            audio.play(Sfx::MenuSelect);
+                        } else if (menu.selected == kMenuGarage) {
+                            garageSelected = static_cast<std::size_t>(progress.selectedCar);
+                            screen = Screen::Garage;
+                            audio.play(Sfx::MenuSelect);
+                        } else if (menu.selected == kMenuAssists) {
+                            screen = Screen::Guide;
+                            audio.play(Sfx::MenuSelect);
                         } else if (menu.selected == kMenuQuit) {
                             running = false;
                         }
@@ -217,22 +304,76 @@ int main(int /*argc*/, char* /*argv*/[]) {
                     }
                     break;
                 }
-                case Screen::Playing:
+                case Screen::Garage: {
+                    const std::size_t count = kCars.size();
+                    if (key == SDLK_LEFT) {
+                        garageSelected = (garageSelected + count - 1) % count;
+                        audio.play(Sfx::MenuMove);
+                    } else if (key == SDLK_RIGHT) {
+                        garageSelected = (garageSelected + 1) % count;
+                        audio.play(Sfx::MenuMove);
+                    } else if (key == SDLK_ESCAPE) {
+                        backToMenu();
+                    } else if (confirm) {
+                        if (progress.chooseCar(garageSelected)) {   // buys it if needed, then drives it
+                            progress.save(savePath);
+                            audio.play(Sfx::MenuSelect);
+                        } else {
+                            audio.play(Sfx::Denied);
+                        }
+                    }
+                    break;
+                }
+                case Screen::Guide:
+                    if (key == SDLK_ESCAPE || confirm) {
+                        backToMenu();
+                    }
+                    break;
+                case Screen::Shop: {
+                    const std::size_t rows = static_cast<std::size_t>(ShopItem::Count) + 1;   // + BACK
+                    if (key == SDLK_UP) {
+                        shopSelected = (shopSelected + rows - 1) % rows;
+                        audio.play(Sfx::MenuMove);
+                    } else if (key == SDLK_DOWN) {
+                        shopSelected = (shopSelected + 1) % rows;
+                        audio.play(Sfx::MenuMove);
+                    } else if (key == SDLK_ESCAPE || (confirm && shopSelected == rows - 1)) {
+                        backToMenu();
+                    } else if (confirm) {
+                        if (progress.buy(static_cast<ShopItem>(shopSelected))) {
+                            progress.save(savePath);
+                            audio.play(Sfx::MenuSelect);
+                        } else {
+                            audio.play(Sfx::Denied);   // maxed out or not enough coins
+                        }
+                    }
+                    break;
+                }
+                case Screen::Playing: {
                     // Steering is held, so it's read as keyboard state in the logic loop, not here.
+                    // Assist keys only work while that assist has charge from a power-up.
+                    const auto toggleIfCharged = [&](PowerUp p, auto&& toggle) {
+                        if (chargeOf(p) > 0.0f) {
+                            toggle();
+                        } else {
+                            audio.play(Sfx::Denied);
+                        }
+                    };
                     if (key == SDLK_ESCAPE) {
                         backToMenu();
                     } else if (key == SDLK_TAB) {
                         showSensorDebug = !showSensorDebug;
                     } else if (key == SDLK_a) {
-                        acc.toggle(ego.speed());
+                        toggleIfCharged(PowerUp::Acc, [&] { acc.toggle(ego.speed()); });
                     } else if (key == SDLK_l) {
-                        lka.toggle();
+                        toggleIfCharged(PowerUp::Lka, [&] { lka.toggle(); });
                     } else if (key == SDLK_f) {
-                        fusionOn = !fusionOn;
+                        toggleIfCharged(PowerUp::Fusion, [&] { fusionOn = !fusionOn; });
                     } else if (key == SDLK_b) {
-                        bsw.toggle();
+                        toggleIfCharged(PowerUp::Bsw, [&] { bsw.toggle(); });
                     }
                     break;
+                }
                 case Screen::GameOver:
                     if (confirm) {
                         startRun();
@@ -257,6 +398,32 @@ int main(int /*argc*/, char* /*argv*/[]) {
         // --- Logic: zero or more fixed cycles per frame ---
         while (accumulator >= cfg::kCycleTime) {
             if (screen == Screen::Playing) {
+                // Power-ups: collect, and drain the charge of active assists.
+                if (const std::optional<PowerUp> got = powerUps.step(ego, cfg::kCycleTime, progress.hasMagnet())) {
+                    chargeAssist(*got);
+                    audio.play(Sfx::PowerUp);
+                    pickupName = *got == PowerUp::Acc      ? "+ CRUISE CONTROL"
+                                 : *got == PowerUp::Lka    ? "+ LANE KEEPING"
+                                 : *got == PowerUp::Bsw    ? "+ BLIND SPOT WARNING"
+                                 : *got == PowerUp::Fusion ? "+ SENSOR FUSION"
+                                                           : "+ 1 AEB SAVE";
+                    pickupNameTime = kPickupNameTime;
+                }
+                pickupNameTime = std::max(0.0f, pickupNameTime - cfg::kCycleTime);
+                invulnerable = std::max(0.0f, invulnerable - cfg::kCycleTime);
+                for (PowerUp p : {PowerUp::Acc, PowerUp::Lka, PowerUp::Bsw, PowerUp::Fusion}) {
+                    float& c = chargeOf(p);
+                    if (c > 0.0f) {
+                        c -= cfg::kCycleTime;
+                        if (c <= 0.0f) {
+                            c = 0.0f;
+                            dischargeAssist(p);
+                        }
+                    }
+                }
+                // Difficulty: more traffic the further you get.
+                traffic.setActiveCount(kStartTraffic + static_cast<std::size_t>(ego.position() / kMetresPerExtraCar));
+
                 // Perception: every sensor refreshes its object list through the same virtual call.
                 hazards.step(ego);
                 SensorEnvironment env;
@@ -280,13 +447,28 @@ int main(int /*argc*/, char* /*argv*/[]) {
                     acc.cancel();                 // the driver's brake cancels ACC
                 } else if (keys[SDL_SCANCODE_UP]) {
                     // Full throttle fades out near top speed, like air drag catching up with the engine.
-                    const float headroom = 1.0f - (ego.speed() / kTopSpeed) * (ego.speed() / kTopSpeed);
-                    requests.driverThrottle = kMaxThrottle * std::max(headroom, 0.0f);
+                    const float topSpeed = kTopSpeed + progress.car().topSpeedBonus;
+                    const float headroom = 1.0f - (ego.speed() / topSpeed) * (ego.speed() / topSpeed);
+                    requests.driverThrottle = kMaxThrottle * progress.car().accelScale * std::max(headroom, 0.0f);
+                }
+                // No buttons needed on a handheld: after braking, ACC resumes by itself once the brake
+                // has been released for a moment (and the driver isn't accelerating).
+                if (keys[SDL_SCANCODE_DOWN] || keys[SDL_SCANCODE_UP]) {
+                    accResumeTimer = 0.0f;
+                } else if (acc.state() == AccState::Standby) {
+                    accResumeTimer += cfg::kCycleTime;
+                    if (accResumeTimer >= kAccAutoResume) {
+                        acc.toggle(ego.speed());   // Standby -> Active, back to the old set speed
+                        accResumeTimer = 0.0f;
+                    }
                 }
                 if (acc.state() == AccState::Active) {
                     requests.acc = acc.step(cfg::kCycleTime, ego.speed(), lead);
                 }
-                requests.aeb = aeb.step(lead);    // safety function: always on
+                // AEB runs while it has saves (and finishes a braking it already started).
+                if (aebSaves > 0 || isBraking(aeb.stage())) {
+                    requests.aeb = aeb.step(lead);
+                }
 
                 ego.setAcceleration(arbitrate(requests).accel);
 
@@ -294,6 +476,7 @@ int main(int /*argc*/, char* /*argv*/[]) {
                 const AebStage stage = aeb.stage();
                 if (isBraking(stage) && !isBraking(lastAebStage)) {
                     audio.play(Sfx::EmergencyBrake);
+                    aebSaves = std::max(aebSaves - 1, 0);   // each emergency braking uses one save
                 }
                 if (stage == AebStage::Warning) {
                     warningChimeTimer -= cfg::kCycleTime;
@@ -309,7 +492,8 @@ int main(int /*argc*/, char* /*argv*/[]) {
                 const bool right = keys[SDL_SCANCODE_RIGHT];
                 std::optional<float> driverSteer;
                 if (left != right) {   // both or neither held: no steering
-                    driverSteer = left ? -kDriverSteerRate : kDriverSteerRate;
+                    const float steerRate = progress.car().steerRate;   // always stronger than LKA's 1.2
+                    driverSteer = left ? -steerRate : steerRate;
                 }
                 // BSW removes steering towards an occupied blind spot; LKA then sees "no driver" and re-centres.
                 const std::optional<float> allowedSteer = bsw.step(sensors[kRearLeftRadar]->objects(),
@@ -358,14 +542,24 @@ int main(int /*argc*/, char* /*argv*/[]) {
             if (screen != Screen::Playing) {
                 continue;
             }
+            const int nearMissPoints = nearMiss.update(cfg::kCycleTime, ego, traffic.cars());
+            if (nearMissPoints > 0) {
+                bonus += nearMissPoints;
+                audio.play(Sfx::NearMiss);
+            }
             // Crash: into another car (from any side), or into the road-side barrier.
             const bool hitCar = std::any_of(traffic.cars().begin(), traffic.cars().end(),
                                             [&](const Vehicle& car) { return collides(ego, car); });
-            if (hitCar || ego.hitCurb()) {
+            if ((hitCar || ego.hitCurb()) && invulnerable <= 0.0f && shields > 0) {
+                --shields;                    // the shield takes the hit
+                invulnerable = kShieldTime;
+                audio.play(Sfx::Crash);
+            } else if ((hitCar || ego.hitCurb()) && invulnerable <= 0.0f) {
                 audio.play(Sfx::Crash);
                 lastScore = scoreOf(ego);
-                newBest = lastScore > best;
-                best = std::max(best, lastScore);
+                newBest = lastScore > progress.best;
+                coinsEarned = progress.finishRun(lastScore);
+                progress.save(savePath);
                 screen = Screen::GameOver;
                 accumulator = 0.0f;
             }
@@ -377,7 +571,10 @@ int main(int /*argc*/, char* /*argv*/[]) {
         const float scroll = ego.position() * layout::kPixelsPerMeter;
         hud.score = scoreOf(ego);
         hud.scorePenalty = penaltyFlash > 0.0f;
-        hud.best = best;
+        hud.best = progress.best;
+        hud.combo = nearMiss.comboActive() ? nearMiss.combo() : 0;
+        hud.shields = screen == Screen::Playing ? shields : 0;
+        hud.pickupName = pickupNameTime > 0.0f ? pickupName : nullptr;
         hud.speedKmh = static_cast<int>(ego.speed() * 3.6f);   // m/s -> km/h
 
         AssistView& accLamp = hud.assists[0];
@@ -422,10 +619,41 @@ int main(int /*argc*/, char* /*argv*/[]) {
                                     : (sensors[kFrontCamera]->available() ? AssistLamp::Active : AssistLamp::Degraded);
         fusionLamp.level = 1.0f;
 
+        // Uncharged assists are locked (grey); the bar shows the charge left, or AEB's saves.
+        const float fullCharge = progress.powerUpSeconds();
+        const std::array<std::pair<std::size_t, PowerUp>, 4> chargedLamps{
+            {{0, PowerUp::Acc}, {2, PowerUp::Lka}, {3, PowerUp::Bsw}, {4, PowerUp::Fusion}}};
+        for (const auto& [lampIndex, p] : chargedLamps) {
+            if (chargeOf(p) <= 0.0f) {
+                hud.assists[lampIndex].lamp = AssistLamp::Locked;
+            }
+            hud.assists[lampIndex].level = chargeOf(p) / fullCharge;
+        }
+        if (aebSaves == 0 && !isBraking(aeb.stage())) {
+            aebLamp.lamp = AssistLamp::Locked;
+        }
+        aebLamp.level = static_cast<float>(aebSaves) / static_cast<float>(kMaxAebSaves);
+
         // --- Render: back to front ---
         gfx.drawRoad(scroll);
 
-        if (screen != Screen::Menu) {
+        if (screen == Screen::Playing || screen == Screen::GameOver) {
+            for (const PowerUpField::Pickup& p : powerUps.pickups()) {
+                const float y = layout::kEgoScreenY - (p.position - ego.position()) * layout::kPixelsPerMeter;
+                if (y > -40.0f && y < static_cast<float>(cfg::kScreenHeight) + 40.0f) {
+                    struct Look { const char* label; SDL_Color colour; };
+                    const Look look = p.type == PowerUp::Acc      ? Look{"ACC", SDL_Color{46, 204, 113, 255}}
+                                      : p.type == PowerUp::Lka    ? Look{"LKA", SDL_Color{60, 170, 240, 255}}
+                                      : p.type == PowerUp::Bsw    ? Look{"BSW", SDL_Color{243, 156, 18, 255}}
+                                      : p.type == PowerUp::Fusion ? Look{"FUS", SDL_Color{170, 100, 230, 255}}
+                                                                  : Look{"AEB", SDL_Color{230, 70, 60, 255}};
+                    gfx.drawPickup((p.lateral + 0.5f) * cfg::kLaneWidth, y, look.label, look.colour);
+                }
+            }
+        }
+
+        const bool inMenus = screen == Screen::Menu || screen == Screen::Shop || screen == Screen::Garage || screen == Screen::Guide;
+        if (!inMenus) {
             for (const OilField::Patch& p : oil.patches()) {
                 const float y = layout::kEgoScreenY - (p.position - ego.position()) * layout::kPixelsPerMeter;
                 if (y > -60.0f && y < static_cast<float>(cfg::kScreenHeight) + 60.0f) {
@@ -453,9 +681,37 @@ int main(int /*argc*/, char* /*argv*/[]) {
 
         if (screen == Screen::Menu) {
             gfx.drawMenu(menu);
+        } else if (screen == Screen::Garage) {
+            GarageView view;
+            for (std::size_t i = 0; i < kCars.size(); ++i) {
+                const CarOffer& car = kCars[i];
+                view.cars[i] = GarageCarView{car.name, car.strength, car.weakness, car.spriteModel, car.price,
+                                             progress.ownsCar(i), static_cast<int>(i) == progress.selectedCar,
+                                             progress.coins >= car.price};
+            }
+            view.selected = garageSelected;
+            view.coins = progress.coins;
+            gfx.drawGarage(view);
+        } else if (screen == Screen::Guide) {
+            gfx.drawAssistGuide();
+        } else if (screen == Screen::Shop) {
+            ShopView view;
+            for (std::size_t i = 0; i < view.rows.size(); ++i) {
+                const auto item = static_cast<ShopItem>(i);
+                const ShopOffer& offer = kShopOffers[i];
+                const int price = progress.nextPrice(item);
+                view.rows[i] = ShopRowView{offer.name, offer.description, progress.level(item), offer.maxLevel,
+                                           price, price > 0 && progress.coins >= price};
+            }
+            view.selected = shopSelected;
+            view.coins = progress.coins;
+            gfx.drawShop(view);
         } else {
             const float egoX = (ego.lateral() + 0.5f) * cfg::kLaneWidth;
-            gfx.drawCar(egoX, layout::kEgoScreenY, CarSkin::Blue);
+            const bool blinkOff = invulnerable > 0.0f && (SDL_GetTicks() / 100) % 2 == 0;   // shield just saved you
+            if (!blinkOff) {
+                gfx.drawCar(egoX, layout::kEgoScreenY, CarSkin::Blue, static_cast<std::size_t>(progress.car().spriteModel));
+            }
 
             // Bridges pass over the cars; fog hides everything inside it, the player's view included.
             for (const float b : hazards.bridges()) {
@@ -504,7 +760,7 @@ int main(int /*argc*/, char* /*argv*/[]) {
             gfx.drawPanel(hud);
         }
         if (screen == Screen::GameOver) {
-            gfx.drawGameOver(lastScore, best, newBest);
+            gfx.drawGameOver(lastScore, progress.best, newBest, coinsEarned);
         }
 
         SDL_RenderPresent(renderer.get());

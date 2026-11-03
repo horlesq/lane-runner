@@ -7,7 +7,7 @@
 #include <vector>
 
 enum class Sfx : std::uint8_t {
-    MenuMove, MenuSelect, Denied, Start, LaneChange, Crash, CollisionWarning, EmergencyBrake, Skid, Horn, Count
+    MenuMove, MenuSelect, Denied, Start, LaneChange, Crash, CollisionWarning, EmergencyBrake, Skid, Horn, PowerUp, NearMiss, Count
 };
 
 // Synthesised sound effects and an engine hum. No audio files: every sound is generated
