@@ -18,6 +18,7 @@
 //  - Accidents: wrecked cars standing across a lane.
 //  - Rain: less grip, and the camera sees less far.
 //  - Tunnels: dark; at the entrance and exit the camera is dazzled for a moment.
+//    No fog or rain overlaps a tunnel (and the game turns the wind off inside).
 class RoadHazards {
 public:
     static constexpr std::size_t kMaxFog = 2;
@@ -78,10 +79,8 @@ public:
             debris_[i] = makeDebris(first(kFirstDebris) + kDebrisSpacing * static_cast<float>(i));
         }
         accidents_[0] = makeAccident(first(kFirstAccident));
-        const float rainStart = first(kFirstRain);
-        rain_[0] = Zone{rainStart, rainStart + uniform(200.0f, 350.0f)};
-        const float tunnelStart = first(kFirstTunnel);
-        tunnels_[0] = Zone{tunnelStart, tunnelStart + uniform(150.0f, 260.0f)};
+        rain_[0] = makeRain(first(kFirstRain));
+        tunnels_[0] = makeTunnel(first(kFirstTunnel));
     }
 
     static constexpr std::uint32_t kDefaultSeed = 2024;
@@ -115,14 +114,12 @@ public:
         }
         for (Zone& z : rain_) {
             if (z.end < ego.position() - kRecycleBehind) {
-                const float start = ego.position() + uniform(kRainSpacing * 0.7f, kRainSpacing * 1.3f);
-                z = Zone{start, start + uniform(200.0f, 350.0f)};
+                z = makeRain(ego.position() + uniform(kRainSpacing * 0.7f, kRainSpacing * 1.3f));
             }
         }
         for (Zone& z : tunnels_) {
             if (z.end < ego.position() - kRecycleBehind) {
-                const float start = ego.position() + uniform(kTunnelSpacing * 0.7f, kTunnelSpacing * 1.3f);
-                z = Zone{start, start + uniform(150.0f, 260.0f)};
+                z = makeTunnel(ego.position() + uniform(kTunnelSpacing * 0.7f, kTunnelSpacing * 1.3f));
             }
         }
     }
@@ -210,6 +207,7 @@ private:
     static constexpr float kRainSpacing = 1000.0f;
     static constexpr float kFirstTunnel = 900.0f;
     static constexpr float kTunnelSpacing = 1200.0f;
+    static constexpr float kWeatherGap = 40.0f;   // m between a tunnel portal and fog or rain
 
     template <std::size_t N>
     static bool inAny(const std::array<Zone, N>& zones, float position, float margin) {
@@ -248,7 +246,55 @@ private:
 
     float uniform(float lo, float hi) { return std::uniform_real_distribution<float>(lo, hi)(rng_); }
 
-    FogBank makeFog(float start) { return FogBank{start, start + uniform(60.0f, 120.0f)}; }
+    static bool overlaps(float start, float end, float otherStart, float otherEnd) {
+        return start < otherEnd + kWeatherGap && end > otherStart - kWeatherGap;
+    }
+
+    // Fog and rain start after any tunnel they would overlap.
+    float clearOfTunnels(float start, float length) const {
+        for (const Zone& t : tunnels_) {
+            if (overlaps(start, start + length, t.start, t.end)) {
+                start = t.end + kWeatherGap;
+            }
+        }
+        return start;
+    }
+
+    FogBank makeFog(float start) {
+        const float length = uniform(60.0f, 120.0f);
+        start = clearOfTunnels(start, length);
+        return FogBank{start, start + length};
+    }
+
+    Zone makeRain(float start) {
+        const float length = uniform(200.0f, 350.0f);
+        start = clearOfTunnels(start, length);
+        return Zone{start, start + length};
+    }
+
+    // A tunnel moves past any fog or rain it would overlap (a few passes: moving it can hit the next zone).
+    Zone makeTunnel(float start) {
+        const float length = uniform(150.0f, 260.0f);
+        for (int pass = 0; pass < 4; ++pass) {
+            bool moved = false;
+            for (const FogBank& f : fog_) {
+                if (overlaps(start, start + length, f.start, f.end)) {
+                    start = f.end + kWeatherGap;
+                    moved = true;
+                }
+            }
+            for (const Zone& r : rain_) {
+                if (overlaps(start, start + length, r.start, r.end)) {
+                    start = r.end + kWeatherGap;
+                    moved = true;
+                }
+            }
+            if (!moved) {
+                break;
+            }
+        }
+        return Zone{start, start + length};
+    }
 
     float furthestFog() const {
         float far = 0.0f;

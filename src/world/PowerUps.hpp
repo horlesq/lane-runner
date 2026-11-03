@@ -32,15 +32,18 @@ public:
     }
 
     // Every 20 ms: returns the pick-up the player drove through this cycle, if any.
-    // magnet: nearby pick-ups slide sideways towards the player's lane.
+    // magnet: a pick-up close to the player, in any lane, flies into the car.
     // obstacles: closed lanes, so a new pick-up never lands where it can't be reached.
     std::optional<PowerUp> step(const Vehicle& ego, float dt = 0.02f, bool magnet = false, Span<StaticObstacle> obstacles = {}) {
         std::optional<PowerUp> collected;
         for (Pickup& p : pickups_) {
             const float ahead = p.position - ego.position();
-            if (magnet && ahead > 0.0f && ahead < kMagnetRange) {
-                const float pull = std::clamp(ego.lateral() - p.lateral, -kMagnetRate * dt, kMagnetRate * dt);
-                p.lateral += pull;
+            if (magnet && std::abs(ahead) < kMagnetRange) {
+                // Home in on the car: sideways, and along the road faster than the car drives.
+                const float lateralStep = kMagnetLateralRate * dt;
+                const float longitudinalStep = (ego.speed() + kMagnetCatchUp) * dt;
+                p.lateral += std::clamp(ego.lateral() - p.lateral, -lateralStep, lateralStep);
+                p.position += std::clamp(-ahead, -longitudinalStep, longitudinalStep);
             }
             // Collected as soon as any part of the car touches the badge.
             const bool touched = std::abs(ego.lateral() - p.lateral) < kBadgeHalfWidth + ego.width() / 2.0f &&
@@ -64,8 +67,9 @@ private:
     static constexpr float kRecycleBehind = 20.0f;
     static constexpr float kBadgeHalfWidth = 0.25f;   // lanes; the drawn badge is about half a lane wide
     static constexpr float kBadgeHalfLength = 1.5f;   // m
-    static constexpr float kMagnetRange = 40.0f;   // m ahead
-    static constexpr float kMagnetRate = 1.5f;     // lanes/s
+    static constexpr float kMagnetRange = 10.0f;         // m ahead or behind
+    static constexpr float kMagnetLateralRate = 2.5f;    // lanes/s
+    static constexpr float kMagnetCatchUp = 8.0f;        // m/s on top of the car's speed
 
     // Mostly where the player can reach it: their lane (40 %), a neighbouring lane (40 %), anywhere (20 %).
     // Never inside or just before a closed lane.

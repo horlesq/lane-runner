@@ -536,7 +536,9 @@ int main(int /*argc*/, char* /*argv*/[]) {
                     audio.play(Sfx::Skid);
                 }
                 ego.setGrip(std::min(surface.grip, hazards.inRain(ego.position()) ? kRainGrip : 1.0f));
-                ego.push(wind.step(cfg::kCycleTime) + surface.slide);
+                // The wind keeps changing in a tunnel, it just can't reach the car there.
+                const float gust = wind.step(cfg::kCycleTime);
+                ego.push((hazards.inTunnel(ego.position()) ? 0.0f : gust) + surface.slide);
             } else {
                 ego.setAcceleration(0.0f);   // menu: an invisible camera cruises through traffic
             }
@@ -630,7 +632,8 @@ int main(int /*argc*/, char* /*argv*/[]) {
             case BswState::Off:         bswLamp.lamp = AssistLamp::Off;          break;
         }
         bswLamp.level = 1.0f;
-        hud.wind = screen == Screen::Playing ? wind.current() : 0.0f;
+        const bool windBlows = screen == Screen::Playing && !hazards.inTunnel(ego.position());
+        hud.wind = windBlows ? wind.current() : 0.0f;
         hud.cameraOk = screen != Screen::Playing || sensors[kFrontCamera]->available();
         hud.cameraText = nullptr;
         if (screen == Screen::Playing) {
@@ -805,7 +808,7 @@ int main(int /*argc*/, char* /*argv*/[]) {
             }
 
             if (screen == Screen::Playing) {
-                gfx.drawWind(wind.current(), scroll);
+                gfx.drawWind(windBlows ? wind.current() : 0.0f, scroll);
             }
 
             if (screen == Screen::Playing && bsw.state() != BswState::Off) {

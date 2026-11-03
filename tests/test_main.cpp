@@ -880,6 +880,39 @@ static void testMagnetPullsPickups() {
     CHECK(!collected2);
 }
 
+// The magnet only reaches pick-ups close to the car: one 60 m ahead in another lane stays put.
+static void testMagnetRange() {
+    PowerUpField field;
+    const PowerUpField::Pickup target = field.pickups()[0];
+    const int myLane = target.lateral < 1.5f ? 3 : 0;
+    const Vehicle ego(myLane, 0.0f, target.position - 60.0f);
+    field.step(ego, 0.02f, true);
+    CHECK(near(field.pickups()[0].lateral, target.lateral));
+    CHECK(near(field.pickups()[0].position, target.position));
+}
+
+// Over a long drive, no fog bank or rain zone ever overlaps a tunnel.
+static void testNoWeatherInTunnels() {
+    for (std::uint32_t seed : {1u, 7u, 2024u, 31337u}) {
+        RoadHazards hazards(seed);
+        Vehicle ego(1, 30.0f, 0.0f);
+        bool overlap = false;
+        for (int step = 0; step < 50 * 600 && !overlap; ++step) {   // 10 minutes at 30 m/s
+            ego.step(0.02f);
+            hazards.step(ego);
+            for (const RoadHazards::Zone& t : hazards.tunnels()) {
+                for (const RoadHazards::FogBank& f : hazards.fog()) {
+                    overlap = overlap || (f.start < t.end && f.end > t.start);
+                }
+                for (const RoadHazards::Zone& r : hazards.rain()) {
+                    overlap = overlap || (r.start < t.end && r.end > t.start);
+                }
+            }
+        }
+        CHECK(!overlap);
+    }
+}
+
 // --- Roadworks (static obstacles) ---
 
 // Touching a closed stretch of lane is a crash; driving past it in the next lane is not.
@@ -1039,6 +1072,8 @@ int main() {
     testGarage();
     testNewShopItems();
     testMagnetPullsPickups();
+    testMagnetRange();
+    testNoWeatherInTunnels();
     testObstacleHit();
     testCrashReport();
     testSensorsSeeBarrier();
