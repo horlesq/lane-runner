@@ -5,7 +5,8 @@
 // Plain data the game fills in every frame so the renderer can draw the side panel.
 // The renderer only reads it; it knows nothing about the classes that produce it.
 
-enum class AssistLamp : std::uint8_t { Locked, Off, Active, Degraded };
+// Intervening = the assist is acting right now (e.g. emergency braking): shown red.
+enum class AssistLamp : std::uint8_t { Locked, Off, Active, Degraded, Intervening };
 
 struct AssistView {
     const char* name;

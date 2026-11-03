@@ -7,7 +7,10 @@
 #include <string>
 #include <SDL_image.h>
 #include "audio/Audio.hpp"
+#include "control/Arbiter.hpp"
 #include "core/Config.hpp"
+#include "functions/Acc.hpp"
+#include "functions/Aeb.hpp"
 #include "platform/SdlContext.hpp"
 #include "platform/Window.hpp"
 #include "render/Layout.hpp"
@@ -16,7 +19,6 @@
 #include "world/Lead.hpp"
 #include "world/Traffic.hpp"
 #include "world/Vehicle.hpp"
-#include "functions/Acc.hpp"
 
 // ASSET_DIR is injected by CMake; wrap the macro in a typed constant once and use that.
 constexpr const char* kAssetDir = ASSET_DIR;
@@ -84,6 +86,7 @@ int main(int /*argc*/, char* /*argv*/[]) {
     Vehicle ego(1, kMenuSpeed);
     Traffic traffic;
     Acc acc;   // adaptive cruise control
+    Aeb aeb;   // automatic emergency braking, always on
     MenuView menu;
     HudView hud;
     int best = 0;
@@ -91,6 +94,12 @@ int main(int /*argc*/, char* /*argv*/[]) {
     bool newBest = false;
 
     bool showSensorDebug = true;   // Tab: engineer's view of what the sensors detect
+
+    // AEB feedback: sounds play on stage changes, the warning chime repeats while it lasts.
+    AebStage lastAebStage = AebStage::Inactive;
+    float warningChimeTimer = 0.0f;   // s until the next warning chime
+    constexpr float kWarningChimeInterval = 0.5f;
+    const auto isBraking = [](AebStage s) { return s == AebStage::PartialBrake || s == AebStage::FullBrake; };
 
     const auto scoreOf = [](const Vehicle& v) {
         return static_cast<int>(v.position() * layout::kPixelsPerMeter / 10.0f);
@@ -100,6 +109,8 @@ int main(int /*argc*/, char* /*argv*/[]) {
         ego = Vehicle(1, kStartSpeed);
         traffic = Traffic();
         acc = Acc();
+        aeb = Aeb();
+        lastAebStage = AebStage::Inactive;
         screen = Screen::Playing;
         audio.play(Sfx::Start);
     };
@@ -108,6 +119,7 @@ int main(int /*argc*/, char* /*argv*/[]) {
         ego = Vehicle(1, kMenuSpeed);
         traffic = Traffic();
         acc = Acc();
+        aeb = Aeb();
         menu.best = best;
         screen = Screen::Menu;
     };
@@ -195,19 +207,38 @@ int main(int /*argc*/, char* /*argv*/[]) {
         // --- Logic: zero or more fixed cycles per frame ---
         while (accumulator >= cfg::kCycleTime) {
             if (screen == Screen::Playing) {
+                // Every source puts its request in; the arbiter alone decides what reaches the car.
+                const std::optional<Lead> lead = findLead(ego, traffic);   // perceive once, use everywhere
+                AccelRequests requests;
+
                 // Held keys act every cycle, so they are read as state rather than events.
-                // Priority: driver brake > driver throttle > ACC > coasting.
                 const Uint8* keys = SDL_GetKeyboardState(nullptr);
                 if (keys[SDL_SCANCODE_DOWN]) {
-                    acc.cancel();                 // the driver's brake always wins and cancels ACC
-                    ego.setAcceleration(-8.0f);
+                    requests.driverBrake = -8.0f;
+                    acc.cancel();                 // the driver's brake cancels ACC
                 } else if (keys[SDL_SCANCODE_UP]) {
-                    ego.setAcceleration(4.0f);    // overrides ACC while held, without cancelling it
-                } else if (acc.state() == AccState::Active) {
-                    ego.setAcceleration(acc.step(cfg::kCycleTime, ego.speed(), findLead(ego, traffic)));
-                } else {
-                    ego.setAcceleration(-0.5f);   // rolling resistance
+                    requests.driverThrottle = 4.0f;
                 }
+                if (acc.state() == AccState::Active) {
+                    requests.acc = acc.step(cfg::kCycleTime, ego.speed(), lead);
+                }
+                requests.aeb = aeb.step(lead);    // safety function: always on
+
+                ego.setAcceleration(arbitrate(requests).accel);
+
+                // AEB sounds: squeal when braking starts, repeating chime while warning.
+                const AebStage stage = aeb.stage();
+                if (isBraking(stage) && !isBraking(lastAebStage)) {
+                    audio.play(Sfx::EmergencyBrake);
+                }
+                if (stage == AebStage::Warning) {
+                    warningChimeTimer -= cfg::kCycleTime;
+                    if (lastAebStage != AebStage::Warning || warningChimeTimer <= 0.0f) {
+                        audio.play(Sfx::CollisionWarning);
+                        warningChimeTimer = kWarningChimeInterval;
+                    }
+                }
+                lastAebStage = stage;
             } else {
                 ego.setAcceleration(0.0f);   // menu: an invisible camera cruises through traffic
             }
@@ -248,6 +279,15 @@ int main(int /*argc*/, char* /*argv*/[]) {
         }
         accLamp.level = 1.0f;
 
+        AssistView& aebLamp = hud.assists[1];   // green = armed, amber = warning, red = braking
+        switch (aeb.stage()) {
+            case AebStage::Inactive:     aebLamp.lamp = AssistLamp::Active;       break;
+            case AebStage::Warning:      aebLamp.lamp = AssistLamp::Degraded;     break;
+            case AebStage::PartialBrake:
+            case AebStage::FullBrake:    aebLamp.lamp = AssistLamp::Intervening;  break;
+        }
+        aebLamp.level = 1.0f;
+
         // --- Render: back to front ---
         gfx.drawRoad(scroll);
 
@@ -273,6 +313,10 @@ int main(int /*argc*/, char* /*argv*/[]) {
                 if (const std::optional<Lead> lead = findLead(ego, traffic)) {
                     gfx.drawLeadMarker(egoX, lead->gap, lead->relativeSpeed);
                 }
+            }
+
+            if (screen == Screen::Playing && aeb.stage() != AebStage::Inactive) {
+                gfx.drawAlertBorder(isBraking(aeb.stage()));   // red while braking, amber when warning
             }
 
             gfx.drawPanel(hud);

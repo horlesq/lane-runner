@@ -6,7 +6,9 @@
 #include <cstdint>
 #include <vector>
 
-enum class Sfx : std::uint8_t { MenuMove, MenuSelect, Denied, Start, LaneChange, Crash, Count };
+enum class Sfx : std::uint8_t {
+    MenuMove, MenuSelect, Denied, Start, LaneChange, Crash, CollisionWarning, EmergencyBrake, Count
+};
 
 // Synthesised sound effects and an engine hum. No audio files: every sound is generated
 // once at startup, so nothing is allocated while the game runs.

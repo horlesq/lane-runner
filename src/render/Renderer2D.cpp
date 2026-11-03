@@ -189,20 +189,23 @@ void Renderer2D::drawPanel(const HudView& hud) {
     int y = 196;
     for (const AssistView& a : hud.assists) {
         SDL_Color c = color::kLocked;
-        if (a.lamp == AssistLamp::Active) {
-            c = color::kActive;
-        } else if (a.lamp == AssistLamp::Degraded) {
-            c = color::kDegraded;
-        } else if (a.lamp == AssistLamp::Off) {
-            c = color::kLabel;
+        switch (a.lamp) {
+            case AssistLamp::Active:      c = color::kActive;    break;
+            case AssistLamp::Degraded:    c = color::kDegraded;  break;
+            case AssistLamp::Off:         c = color::kLabel;     break;
+            case AssistLamp::Intervening: c = color::kCrash;     break;
+            case AssistLamp::Locked:                             break;
         }
 
         font::drawText(r_, a.name, left, y, 2, c);
-        fillRect(right - 10, y + 2, 10, 10, c);
+        const bool flashOff = a.lamp == AssistLamp::Intervening && !blink(200);
+        if (!flashOff) {
+            fillRect(right - 10, y + 2, 10, 10, c);   // intervening lamps flash
+        }
 
         const int barWidth = right - left;
         fillRect(left, y + 18, barWidth, 3, color::kBarBack);
-        if (a.lamp == AssistLamp::Active) {
+        if (a.lamp == AssistLamp::Active || a.lamp == AssistLamp::Intervening) {
             const float level = a.level < 0.0f ? 0.0f : (a.level > 1.0f ? 1.0f : a.level);
             fillRect(left, y + 18, static_cast<int>(static_cast<float>(barWidth) * level), 3, c);
         }
@@ -257,6 +260,29 @@ void Renderer2D::drawLeadMarker(float egoX, float gap, float relativeSpeed) {
     fillRect(labelX, labelY, 2, 21, c);
     font::drawText(r_, gapText, labelX + 5, labelY + 3, 1, color::kText);
     font::drawText(r_, speedText, labelX + 5, labelY + 12, 1, c);
+}
+
+void Renderer2D::drawAlertBorder(bool danger) {
+    // Pulse between 40 % and 100 % strength; faster when braking.
+    const float period = danger ? 250.0f : 600.0f;
+    const float phase = static_cast<float>(SDL_GetTicks() % static_cast<Uint32>(period)) / period;
+    const float pulse = 0.4f + 0.6f * (0.5f + 0.5f * std::cos(phase * 2.0f * 3.14159265f));
+
+    const SDL_Color base = danger ? color::kCrash : color::kDegraded;
+    const int thickness = danger ? 18 : 8;
+    const int w = layout::kPanelX;   // the road area; the panel stays clean
+    const int h = cfg::kScreenHeight;
+
+    // Concentric bands fading towards the centre: a glow rather than a hard frame.
+    for (int i = 0; i < thickness; ++i) {
+        const float fade = 1.0f - static_cast<float>(i) / static_cast<float>(thickness);
+        const auto a = static_cast<Uint8>(150.0f * pulse * fade * fade);
+        const SDL_Color c{base.r, base.g, base.b, a};
+        fillRect(i, i, w - 2 * i, 1, c);
+        fillRect(i, h - 1 - i, w - 2 * i, 1, c);
+        fillRect(i, i + 1, 1, h - 2 * i - 2, c);
+        fillRect(w - 1 - i, i + 1, 1, h - 2 * i - 2, c);
+    }
 }
 
 void Renderer2D::drawMenu(const MenuView& menu) {

@@ -6,6 +6,7 @@
 #include "control/Pid.hpp"
 #include "core/Config.hpp"
 #include "functions/Acc.hpp"
+#include "control/Arbiter.hpp"
 #include "functions/Aeb.hpp"
 #include "world/Lead.hpp"
 #include "world/Vehicle.hpp"
@@ -219,6 +220,47 @@ static void testAebLatch() {
     CHECK(aeb.stage() == AebStage::Inactive);
 }
 
+// --- Arbiter ---
+
+// Base priority without AEB: driver brake > driver throttle > ACC > coasting.
+static void testArbiterPriority() {
+    AccelRequests none;
+    CHECK(arbitrate(none).source == AccelSource::Coast);
+
+    AccelRequests accOnly;
+    accOnly.acc = 1.5f;
+    CHECK(arbitrate(accOnly).source == AccelSource::Acc && near(arbitrate(accOnly).accel, 1.5f));
+
+    AccelRequests throttleOverAcc;                 // pressing the throttle overrides ACC
+    throttleOverAcc.acc = -2.0f;
+    throttleOverAcc.driverThrottle = 4.0f;
+    CHECK(arbitrate(throttleOverAcc).source == AccelSource::Driver && near(arbitrate(throttleOverAcc).accel, 4.0f));
+
+    AccelRequests brakeOverAll;                    // the driver's brake beats throttle and ACC
+    brakeOverAll.acc = 2.0f;
+    brakeOverAll.driverThrottle = 4.0f;
+    brakeOverAll.driverBrake = -8.0f;
+    CHECK(arbitrate(brakeOverAll).source == AccelSource::Driver && near(arbitrate(brakeOverAll).accel, -8.0f));
+}
+
+// AEB can only make braking stronger: it overrides ACC and throttle, never weakens a harder request.
+static void testArbiterAebOverride() {
+    AccelRequests overAcc;
+    overAcc.acc = 2.0f;
+    overAcc.aeb = -9.0f;
+    CHECK(arbitrate(overAcc).source == AccelSource::Aeb && near(arbitrate(overAcc).accel, -9.0f));
+
+    AccelRequests overThrottle;                    // can't accelerate into a crash
+    overThrottle.driverThrottle = 4.0f;
+    overThrottle.aeb = -4.0f;
+    CHECK(near(arbitrate(overThrottle).accel, -4.0f));
+
+    AccelRequests driverBrakesHarder;              // partial AEB must not weaken the driver's full brake
+    driverBrakesHarder.driverBrake = -8.0f;
+    driverBrakesHarder.aeb = -4.0f;
+    CHECK(arbitrate(driverBrakesHarder).source == AccelSource::Driver && near(arbitrate(driverBrakesHarder).accel, -8.0f));
+}
+
 int main() {
     testProportionalOnly();
     testOutputIsClamped();
@@ -233,6 +275,8 @@ int main() {
     testTimeToCollision();
     testAebStages();
     testAebLatch();
+    testArbiterPriority();
+    testArbiterAebOverride();
 
     std::printf(g_failures == 0 ? "All tests passed\n" : "%d test(s) failed\n", g_failures);
     return g_failures == 0 ? 0 : 1;

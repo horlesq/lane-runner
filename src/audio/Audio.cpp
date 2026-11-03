@@ -174,6 +174,29 @@ void Audio::buildClips() {
         }
     }
 
+    // Collision warning: sharp high double beep, like a car's forward-collision chime.
+    appendTone(clip(Sfx::CollisionWarning), sr, 1760.0f, 0.07f, 0.16f, 6.0f);
+    appendSilence(clip(Sfx::CollisionWarning), sr, 0.05f);
+    appendTone(clip(Sfx::CollisionWarning), sr, 1760.0f, 0.07f, 0.16f, 6.0f);
+
+    // Emergency brake: tyre squeal (a wavering high tone) over hissing filtered noise.
+    {
+        std::vector<float>& c = clip(Sfx::EmergencyBrake);
+        const std::size_t n = frames(sr, 0.7f);
+        float filtered = 0.0f;
+        float phase = 0.0f;
+        for (std::size_t i = 0; i < n; ++i) {
+            const float t = static_cast<float>(i) / static_cast<float>(sr);
+            const float x = static_cast<float>(i) / static_cast<float>(n);
+            const float envelope = std::min(1.0f, t * 40.0f) * (1.0f - x) * (1.0f - x);
+            const float freq = 2100.0f + 180.0f * std::sin(2.0f * kPi * 23.0f * t) - 400.0f * x;
+            phase = std::fmod(phase + freq / static_cast<float>(sr), 1.0f);
+            filtered += (noise.next() - filtered) * 0.35f;
+            const float squeal = std::sin(2.0f * kPi * phase);
+            c.push_back(envelope * (0.16f * squeal + 0.22f * filtered));
+        }
+    }
+
     // Crash: low thump + filtered noise that darkens as it fades + gritty sample-and-hold crunch.
     {
         std::vector<float>& c = clip(Sfx::Crash);

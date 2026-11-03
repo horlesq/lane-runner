@@ -35,6 +35,9 @@ public:
     // egoX is road-relative like drawCar; gap in m (bumper to bumper), relativeSpeed in m/s.
     void drawLeadMarker(float egoX, float gap, float relativeSpeed);
 
+    // Pulsing border around the road: amber for a warning, red (thicker) while braking for the driver.
+    void drawAlertBorder(bool danger);
+
     // Full-screen overlays, drawn on top of the road and cars.
     void drawMenu(const MenuView& menu);
     void drawGameOver(int score, int best, bool newBest);
