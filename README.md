@@ -7,6 +7,20 @@ LKA, BSW) compute requests, and arbiters decide what reaches the vehicle. The lo
 
 ![Cover](assets/art/cover.png)
 
+## Video: how the assists work
+
+
+
+https://github.com/user-attachments/assets/bd5728b8-443e-42dd-8394-d69b7c5b7d92
+
+
+
+A 7-minute English walkthrough of the driver-assistance functions this game is built around: ACC, AEB,
+LKA and BSW, the PID controller, sensors and fusion, the Kalman filter, arbitration and calibration.
+Open the [release page](https://github.com/horlesq/lane-runner/releases/tag/adas-explainer) or
+[download the video directly](https://github.com/horlesq/lane-runner/releases/download/adas-explainer/adas-explainer.mp4)
+(1080p, 39 MB).
+
 ## Features
 
 - **Assists:** adaptive cruise control (speed + gap PID, min-selection), automatic emergency braking
