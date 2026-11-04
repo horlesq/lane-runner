@@ -126,6 +126,7 @@ int main(int /*argc*/, char* /*argv*/[]) {
     };
     ObjectList frontObjects;   // what ACC and AEB work with: raw front radar, or the fused list when fusion is on
     bool fusionOn = false;     // F key
+    bool debugMode = false;    // ASSISTS screen: every assist on for the whole run, no power-ups, no score
 
     // --- Game state ---
     Screen screen = Screen::Menu;
@@ -243,6 +244,12 @@ int main(int /*argc*/, char* /*argv*/[]) {
         if (progress.startsWithAcc()) {
             chargeAssist(PowerUp::Acc);
         }
+        if (debugMode) {
+            for (PowerUp p : {PowerUp::Acc, PowerUp::Lka, PowerUp::Bsw, PowerUp::Fusion}) {
+                chargeAssist(p);
+            }
+            aebSaves = kMaxAebSaves;
+        }
         wind = Wind(seed + 3);
         oil = OilField(seed + 4);
         lastAebStage = AebStage::Inactive;
@@ -335,8 +342,11 @@ int main(int /*argc*/, char* /*argv*/[]) {
                     break;
                 }
                 case Screen::Guide:
-                    if (key == SDLK_ESCAPE || confirm) {
+                    if (key == SDLK_ESCAPE) {
                         backToMenu();
+                    } else if (confirm) {
+                        debugMode = !debugMode;
+                        audio.play(Sfx::MenuSelect);
                     }
                     break;
                 case Screen::Shop: {
@@ -416,7 +426,9 @@ int main(int /*argc*/, char* /*argv*/[]) {
 
             if (screen == Screen::Playing) {
                 // Power-ups: collect, and drain the charge of active assists.
-                if (const std::optional<PowerUp> got = powerUps.step(ego, cfg::kCycleTime, progress.hasMagnet(), obstacleView)) {
+                const std::optional<PowerUp> got =
+                    debugMode ? std::nullopt : powerUps.step(ego, cfg::kCycleTime, progress.hasMagnet(), obstacleView);
+                if (got) {
                     chargeAssist(*got);
                     audio.play(Sfx::PowerUp);
                     pickupName = *got == PowerUp::Acc      ? "+ CRUISE CONTROL"
@@ -430,7 +442,7 @@ int main(int /*argc*/, char* /*argv*/[]) {
                 invulnerable = std::max(0.0f, invulnerable - cfg::kCycleTime);
                 for (PowerUp p : {PowerUp::Acc, PowerUp::Lka, PowerUp::Bsw, PowerUp::Fusion}) {
                     float& c = chargeOf(p);
-                    if (c > 0.0f) {
+                    if (c > 0.0f && !debugMode) {   // debug: charges never run out
                         c -= cfg::kCycleTime;
                         if (c <= 0.0f) {
                             c = 0.0f;
@@ -495,7 +507,9 @@ int main(int /*argc*/, char* /*argv*/[]) {
                 const AebStage stage = aeb.stage();
                 if (isBraking(stage) && !isBraking(lastAebStage)) {
                     audio.play(Sfx::EmergencyBrake);
-                    aebSaves = std::max(aebSaves - 1, 0);   // each emergency braking uses one save
+                    if (!debugMode) {
+                        aebSaves = std::max(aebSaves - 1, 0);   // each emergency braking uses one save
+                    }
                 }
                 if (stage == AebStage::Warning) {
                     warningChimeTimer -= cfg::kCycleTime;
@@ -578,9 +592,12 @@ int main(int /*argc*/, char* /*argv*/[]) {
                 audio.play(Sfx::Crash);
                 lastCrash = *crash;
                 lastScore = scoreOf(ego);
-                newBest = lastScore > progress.best;
-                coinsEarned = progress.finishRun(lastScore);
-                progress.save(savePath);
+                newBest = !debugMode && lastScore > progress.best;
+                coinsEarned = 0;
+                if (!debugMode) {   // debug runs don't count
+                    coinsEarned = progress.finishRun(lastScore);
+                    progress.save(savePath);
+                }
                 screen = Screen::GameOver;
                 accumulator = 0.0f;
             }
@@ -666,7 +683,7 @@ int main(int /*argc*/, char* /*argv*/[]) {
         // --- Render: back to front ---
         gfx.drawRoad(scroll);
 
-        if (screen == Screen::Playing || screen == Screen::GameOver) {
+        if ((screen == Screen::Playing || screen == Screen::GameOver) && !debugMode) {
             for (const PowerUpField::Pickup& p : powerUps.pickups()) {
                 const float y = layout::kEgoScreenY - (p.position - ego.position()) * layout::kPixelsPerMeter;
                 const float ahead = p.position - ego.position();
@@ -747,7 +764,7 @@ int main(int /*argc*/, char* /*argv*/[]) {
             view.coins = progress.coins;
             gfx.drawGarage(view);
         } else if (screen == Screen::Guide) {
-            gfx.drawAssistGuide();
+            gfx.drawAssistGuide(debugMode);
         } else if (screen == Screen::Shop) {
             ShopView view;
             for (std::size_t i = 0; i < view.rows.size(); ++i) {

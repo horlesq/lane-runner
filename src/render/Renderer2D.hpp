@@ -88,7 +88,8 @@ public:
     void drawMenu(const MenuView& menu);
     void drawShop(const ShopView& shop);
     void drawGarage(const GarageView& garage);
-    void drawAssistGuide();   // what each power-up does, in plain words
+    // What each power-up does, in plain words. debugMode: all assists on, no power-ups.
+    void drawAssistGuide(bool debugMode);
     // what / tip: what the player crashed into and a hint about the assist that would have helped.
     void drawGameOver(int score, int best, bool newBest, int coinsEarned, const char* what, const char* tip);
 

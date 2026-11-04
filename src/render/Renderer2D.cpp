@@ -1035,7 +1035,7 @@ void Renderer2D::drawGarage(const GarageView& garage) {
     drawTextCentered(controls::kGarage, kCenterX, 440, 1, color::kLabel);
 }
 
-void Renderer2D::drawAssistGuide() {
+void Renderer2D::drawAssistGuide(bool debugMode) {
     struct Entry {
         const char* badge;
         SDL_Color colour;
@@ -1069,7 +1069,9 @@ void Renderer2D::drawAssistGuide() {
         font::drawText(r_, e.line2, 100, y + 36, 1, color::kText);
         y += 70;
     }
-    drawTextCentered(controls::kBack, kCenterX, 456, 1, color::kLabel);
+    drawTextCentered(debugMode ? "DEBUG MODE ON: ALL ASSISTS, NO POWER-UPS, NO SCORE" : "DEBUG MODE OFF", kCenterX, 436, 1,
+                     debugMode ? color::kCrash : color::kLabel);
+    drawTextCentered(controls::kGuide, kCenterX, 456, 1, color::kLabel);
 }
 
 void Renderer2D::drawPickupHint(float centerX, const char* label, SDL_Color c) {
