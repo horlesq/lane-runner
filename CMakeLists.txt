@@ -51,7 +51,7 @@ endif()
 #   cmake -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release
 #   cmake --build build-release && cmake --build build-release --target package
 install(TARGETS lane-runner RUNTIME DESTINATION .)
-install(FILES assets/art/icon.png assets/art/menu-logo.png DESTINATION assets/art)
+install(FILES assets/art/icon.png DESTINATION assets/art)
 install(DIRECTORY
         assets/racing-pack/PNG/Cars
         assets/racing-pack/PNG/Characters
@@ -64,6 +64,9 @@ install(FILES LICENSE DESTINATION .)
 # Windows has no system SDL: copy every DLL the game needs from the toolchain next to it.
 # (RUNTIME_DEPENDENCIES needs CMake 3.21; MSYS2 ships a newer one.)
 if(WIN32)
+    if(POLICY CMP0207)
+        cmake_policy(SET CMP0207 NEW)   # CMake 4.x: normalize DLL paths before the exclude regexes
+    endif()
     get_filename_component(TOOLCHAIN_BIN "${CMAKE_CXX_COMPILER}" DIRECTORY)
     install(TARGETS lane-runner
         RUNTIME_DEPENDENCIES

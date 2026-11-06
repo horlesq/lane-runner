@@ -53,14 +53,15 @@ std::string findAssetDir() {
     return dir;
 }
 
-enum class Screen : std::uint8_t { Menu, Garage, Shop, Guide, Playing, GameOver };
+enum class Screen : std::uint8_t { Menu, Garage, Shop, HowToPlay, Guide, Playing, GameOver };
 
 // Menu entries, in the order of MenuView::items.
 constexpr std::size_t kMenuStart = 0;
 constexpr std::size_t kMenuGarage = 1;
 constexpr std::size_t kMenuShop = 2;
-constexpr std::size_t kMenuAssists = 3;
-constexpr std::size_t kMenuQuit = 4;
+constexpr std::size_t kMenuHowToPlay = 3;
+constexpr std::size_t kMenuAssists = 4;
+constexpr std::size_t kMenuQuit = 5;
 static_assert(kMenuQuit < MenuView{}.items.size(), "Menu indices out of range");
 
 constexpr float kStartSpeed = 20.0f;   // m/s
@@ -143,6 +144,8 @@ int main(int /*argc*/, char* /*argv*/[]) {
     ObjectList frontObjects;   // what ACC and AEB work with: raw front radar, or the fused list when fusion is on
     bool fusionOn = false;     // F key
     bool debugMode = false;    // ASSISTS screen: every assist on for the whole run, no power-ups, no score
+    bool rulesBeforeRun = false;   // HOW TO PLAY was opened by START on a fresh save: ENTER drives
+    bool rulesSeen = false;        // shown once per session at most, so START isn't blocked by it twice
 
     // --- Game state ---
     Screen screen = Screen::Menu;
@@ -339,6 +342,13 @@ int main(int /*argc*/, char* /*argv*/[]) {
                     } else if (confirm) {
                         if (!menu.items[menu.selected].enabled) {
                             audio.play(Sfx::Denied);
+                        } else if (menu.selected == kMenuStart && progress.best == 0 && progress.coins == 0 &&
+                                   !rulesSeen) {
+                            // Very first run on this save: explain the game before it starts.
+                            rulesBeforeRun = true;
+                            rulesSeen = true;
+                            screen = Screen::HowToPlay;
+                            audio.play(Sfx::MenuSelect);
                         } else if (menu.selected == kMenuStart) {
                             startRun();
                         } else if (menu.selected == kMenuShop) {
@@ -348,6 +358,11 @@ int main(int /*argc*/, char* /*argv*/[]) {
                         } else if (menu.selected == kMenuGarage) {
                             garageSelected = static_cast<std::size_t>(progress.selectedCar);
                             screen = Screen::Garage;
+                            audio.play(Sfx::MenuSelect);
+                        } else if (menu.selected == kMenuHowToPlay) {
+                            rulesBeforeRun = false;
+                            rulesSeen = true;
+                            screen = Screen::HowToPlay;
                             audio.play(Sfx::MenuSelect);
                         } else if (menu.selected == kMenuAssists) {
                             screen = Screen::Guide;
@@ -380,6 +395,13 @@ int main(int /*argc*/, char* /*argv*/[]) {
                     }
                     break;
                 }
+                case Screen::HowToPlay:
+                    if (key == SDLK_ESCAPE) {
+                        backToMenu();
+                    } else if (confirm && rulesBeforeRun) {
+                        startRun();
+                    }
+                    break;
                 case Screen::Guide:
                     if (key == SDLK_ESCAPE) {
                         backToMenu();
@@ -756,7 +778,8 @@ int main(int /*argc*/, char* /*argv*/[]) {
             }
         }
 
-        const bool inMenus = screen == Screen::Menu || screen == Screen::Shop || screen == Screen::Garage || screen == Screen::Guide;
+        const bool inMenus = screen == Screen::Menu || screen == Screen::Shop || screen == Screen::Garage ||
+                             screen == Screen::HowToPlay || screen == Screen::Guide;
         if (!inMenus) {
             const auto toScreenY = [&](float position) {
                 return layout::kEgoScreenY - (position - ego.position()) * layout::kPixelsPerMeter;
@@ -815,6 +838,8 @@ int main(int /*argc*/, char* /*argv*/[]) {
             view.selected = garageSelected;
             view.coins = progress.coins;
             gfx.drawGarage(view);
+        } else if (screen == Screen::HowToPlay) {
+            gfx.drawHowToPlay(rulesBeforeRun);
         } else if (screen == Screen::Guide) {
             gfx.drawAssistGuide(debugMode);
         } else if (screen == Screen::Shop) {

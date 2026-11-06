@@ -10,10 +10,11 @@ struct MenuItemView {
 };
 
 struct MenuView {
-    std::array<MenuItemView, 5> items{{
+    std::array<MenuItemView, 6> items{{
         {"START", true},
         {"GARAGE", true},
         {"SHOP", true},
+        {"HOW TO PLAY", true},
         {"ASSISTS", true},
         {"QUIT", true},
     }};

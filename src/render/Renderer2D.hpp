@@ -88,6 +88,8 @@ public:
     void drawMenu(const MenuView& menu);
     void drawShop(const ShopView& shop);
     void drawGarage(const GarageView& garage);
+    // Goal, controls, scoring. firstRun: shown before the very first run, ENTER drives.
+    void drawHowToPlay(bool firstRun);
     // What each power-up does, in plain words. debugMode: all assists on, no power-ups.
     void drawAssistGuide(bool debugMode);
     // what / tip: what the player crashed into and a hint about the assist that would have helped.

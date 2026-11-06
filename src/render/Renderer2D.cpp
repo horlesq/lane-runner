@@ -861,7 +861,7 @@ void Renderer2D::drawMenu(const MenuView& menu) {
     font::drawTextShadow(r_, "LANE RUNNER", kCenterX - font::textWidth("LANE RUNNER", 6) / 2, 70, 6, color::kTitle);
     drawTextCentered("ADAS HIGHWAY CHALLENGE", kCenterX, 126, 2, color::kLabel);
 
-    int y = 164;
+    int y = 158;
     for (std::size_t i = 0; i < menu.items.size(); ++i) {
         const MenuItemView& item = menu.items[i];
         const bool selected = (i == menu.selected);
@@ -881,7 +881,7 @@ void Renderer2D::drawMenu(const MenuView& menu) {
         if (!item.enabled) {
             font::drawText(r_, "SOON", kCenterX + width / 2 + 8, y - 4, 1, color::kDegraded);
         }
-        y += 38;
+        y += 33;
     }
 
     char buf[32];
@@ -1056,7 +1056,46 @@ void Renderer2D::drawGarage(const GarageView& garage) {
     drawTextCentered(controls::kGarage, kCenterX, 440, 1, color::kLabel);
 }
 
+void Renderer2D::drawHowToPlay(bool firstRun) {
+    constexpr int kCenterX = cfg::kScreenWidth / 2;
+    fillRect(0, 0, cfg::kScreenWidth, cfg::kScreenHeight, color::kDim);
+
+    struct Rule {
+        SDL_Color colour;
+        const char* name;
+        const char* line1;
+        const char* line2;
+    };
+    const std::array<Rule, 5> rules{{
+        {color::kText, "DRIVE", controls::kDriveKeys, "TRAFFIC GETS HEAVIER THE FURTHER YOU GO."},
+        {color::kTitle, "SCORE", "EVERY METRE SCORES. PASS CARS CLOSELY FOR A BONUS,",
+         "SEVERAL IN A ROW MAKE A COMBO. CUTTING SOMEONE OFF: -250."},
+        {SDL_Color{46, 204, 113, 255}, "POWER-UPS", "DRIVE THROUGH ONE TO SWITCH ON A DRIVER ASSIST",
+         "FOR A WHILE. WHAT EACH ONE DOES: ASSISTS, IN THE MENU."},
+        {SDL_Color{243, 156, 18, 255}, "HAZARDS", "ROADWORKS, ACCIDENTS, OIL, CROSSWIND, FOG, RAIN",
+         "AND TUNNELS. SOME OF THEM BLIND THE CAMERA."},
+        {SDL_Color{60, 170, 240, 255}, "COINS", "EVERY RUN EARNS COINS. SPEND THEM IN THE SHOP ON",
+         "UPGRADES AND IN THE GARAGE ON FASTER CARS."},
+    }};
+
+    font::drawTextShadow(r_, "HOW TO PLAY", kCenterX - font::textWidth("HOW TO PLAY", 4) / 2, 18, 4, color::kTitle);
+    drawTextCentered("DRIVE AS FAR AS YOU CAN WITHOUT CRASHING", kCenterX, 56, 1, color::kTitle);
+    int y = 84;
+    for (const Rule& rule : rules) {
+        fillRect(56, y + 6, 8, 40, rule.colour);
+        font::drawTextShadow(r_, rule.name, 80, y + 4, 2, rule.colour);
+        font::drawText(r_, rule.line1, 80, y + 24, 1, color::kText);
+        font::drawText(r_, rule.line2, 80, y + 36, 1, color::kText);
+        y += 70;
+    }
+    drawTextCentered(firstRun ? controls::kHowToPlayFirstRun : controls::kHowToPlay, kCenterX, 456, 1,
+                     firstRun ? color::kTitle : color::kLabel);
+}
+
 void Renderer2D::drawAssistGuide(bool debugMode) {
+    constexpr int kCenterX = cfg::kScreenWidth / 2;
+    fillRect(0, 0, cfg::kScreenWidth, cfg::kScreenHeight, color::kDim);
+
     struct Entry {
         const char* badge;
         SDL_Color colour;
@@ -1077,8 +1116,6 @@ void Renderer2D::drawAssistGuide(bool debugMode) {
          "RADAR + CAMERA: IGNORES FAKE RADAR ECHOES", "UNDER BRIDGES, SO NO SURPRISE BRAKING."},
     }};
 
-    constexpr int kCenterX = cfg::kScreenWidth / 2;
-    fillRect(0, 0, cfg::kScreenWidth, cfg::kScreenHeight, color::kDim);
     font::drawTextShadow(r_, "ASSISTS", kCenterX - font::textWidth("ASSISTS", 4) / 2, 18, 4, color::kTitle);
     drawTextCentered("DRIVE THROUGH A POWER-UP: THE ASSIST SWITCHES ON BY ITSELF", kCenterX, 56, 1, color::kTitle);
 
