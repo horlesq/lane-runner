@@ -59,6 +59,7 @@ install(DIRECTORY
         assets/racing-pack/PNG/Objects
     DESTINATION assets/racing-pack/PNG)
 install(FILES assets/racing-pack/License.txt DESTINATION assets/racing-pack)
+install(FILES LICENSE DESTINATION .)
 
 # Windows has no system SDL: copy every DLL the game needs from the toolchain next to it.
 # (RUNTIME_DEPENDENCIES needs CMake 3.21; MSYS2 ships a newer one.)

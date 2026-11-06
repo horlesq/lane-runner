@@ -106,9 +106,10 @@ power-ups, progress save/load and the crash report.
 | Up / Down | move selection | throttle / brake |
 | Left / Right | change car (garage) | steer |
 | Enter / Space | confirm | – |
-| Esc | back / quit | back to menu |
+| Esc | back / quit | pause (resume when paused) |
 | Tab | – | sensor view on/off |
 | A / L / B / F | – | toggle ACC / LKA / BSW / fusion while charged |
+| F11 / Alt+Enter | fullscreen on/off | fullscreen on/off |
 
 Assists switch on automatically when you drive through their power-up.
 
@@ -150,4 +151,4 @@ Progress (best score, coins, upgrades, cars) is stored as `save.txt` in the SDL 
 
 ## Credits
 
-Sprites: [Racing Pack](https://www.kenney.nl) by Kenney, CC0.
+Code: MIT, see [LICENSE](LICENSE). Sprites: [Racing Pack](https://www.kenney.nl) by Kenney, CC0.

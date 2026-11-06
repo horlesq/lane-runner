@@ -92,6 +92,8 @@ public:
     void drawAssistGuide(bool debugMode);
     // what / tip: what the player crashed into and a hint about the assist that would have helped.
     void drawGameOver(int score, int best, bool newBest, int coinsEarned, const char* what, const char* tip);
+    // Pause box over the road; selected: 0 = resume, 1 = quit to menu.
+    void drawPause(std::size_t selected);
 
 private:
     void drawScenery(float scrollPx);

@@ -949,6 +949,27 @@ void Renderer2D::drawGameOver(int score, int best, bool newBest, int coinsEarned
     drawTextCentered(controls::kToMenu, kCenterX, 348, 2, color::kLabel);
 }
 
+void Renderer2D::drawPause(std::size_t selected) {
+    constexpr int kCenterX = layout::kPanelX / 2;   // over the road, like the game-over screen
+    fillRect(0, 0, layout::kPanelX, cfg::kScreenHeight, color::kDim);
+
+    font::drawTextShadow(r_, "PAUSED", kCenterX - font::textWidth("PAUSED", 5) / 2, 120, 5, color::kTitle);
+
+    const std::array<const char*, 2> items{"RESUME", "QUIT TO MENU"};
+    int y = 200;
+    for (std::size_t i = 0; i < items.size(); ++i) {
+        const bool isSelected = i == selected;
+        if (isSelected) {
+            const int w = font::textWidth(items[i], 3) + 30;
+            fillRect(kCenterX - w / 2, y - 8, w, 36, color::kHighlight);
+        }
+        drawTextCentered(items[i], kCenterX, y, 3, isSelected ? color::kTitle : color::kText);
+        y += 50;
+    }
+
+    drawTextCentered(controls::kPaused, kCenterX, 330, 1, color::kLabel);
+}
+
 void Renderer2D::drawShop(const ShopView& shop) {
     constexpr int kCenterX = cfg::kScreenWidth / 2;
     fillRect(0, 0, cfg::kScreenWidth, cfg::kScreenHeight, color::kDim);

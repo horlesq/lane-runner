@@ -191,6 +191,8 @@ int main(int /*argc*/, char* /*argv*/[]) {
     float penaltyFlash = 0.0f;    // s left of the red score flash
 
     bool showSensorDebug = false;   // Tab: engineer's view of what the sensors detect
+    bool paused = false;            // Esc while driving, or the window lost focus
+    std::size_t pauseSelected = 0;  // 0 = resume, 1 = quit to menu
 
     // AEB feedback: sounds play on stage changes, the warning chime repeats while it lasts.
     AebStage lastAebStage = AebStage::Inactive;
@@ -269,6 +271,7 @@ int main(int /*argc*/, char* /*argv*/[]) {
         wind = Wind(seed + 3);
         oil = OilField(seed + 4);
         lastAebStage = AebStage::Inactive;
+        paused = false;
         screen = Screen::Playing;
         audio.play(Sfx::Start);
     };
@@ -282,7 +285,13 @@ int main(int /*argc*/, char* /*argv*/[]) {
         bsw = Bsw();
         menu.best = progress.best;
         menu.coins = progress.coins;
+        paused = false;
         screen = Screen::Menu;
+    };
+
+    const auto pause = [&]() {
+        paused = true;
+        pauseSelected = 0;
     };
 
     // Logic runs in fixed 20 ms cycles; the accumulator carries leftover frame time.
@@ -298,10 +307,24 @@ int main(int /*argc*/, char* /*argv*/[]) {
                 running = false;
                 continue;
             }
+            // Alt+Tab or a click elsewhere: don't keep driving blind.
+            if (event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_FOCUS_LOST &&
+                screen == Screen::Playing && !paused) {
+                pause();
+                continue;
+            }
             if (event.type != SDL_KEYDOWN || event.key.repeat != 0) {
                 continue;
             }
             const SDL_Keycode key = event.key.keysym.sym;
+
+            // F11 or Alt+Enter on any screen: fullscreen on/off. The 640x480 picture is scaled to fit.
+            if (key == SDLK_F11 || (key == SDLK_RETURN && (event.key.keysym.mod & KMOD_ALT) != 0)) {
+                const bool fullscreen = (SDL_GetWindowFlags(window.get()) & SDL_WINDOW_FULLSCREEN_DESKTOP) != 0;
+                SDL_SetWindowFullscreen(window.get(), fullscreen ? 0 : SDL_WINDOW_FULLSCREEN_DESKTOP);
+                continue;
+            }
+
             const bool confirm = (key == SDLK_RETURN || key == SDLK_KP_ENTER || key == SDLK_SPACE);
 
             switch (screen) {
@@ -386,6 +409,18 @@ int main(int /*argc*/, char* /*argv*/[]) {
                     break;
                 }
                 case Screen::Playing: {
+                    if (paused) {
+                        if (key == SDLK_UP || key == SDLK_DOWN) {
+                            pauseSelected = 1 - pauseSelected;   // two entries: up and down both switch
+                            audio.play(Sfx::MenuMove);
+                        } else if (key == SDLK_ESCAPE || (confirm && pauseSelected == 0)) {
+                            paused = false;
+                            audio.play(Sfx::MenuSelect);
+                        } else if (confirm) {
+                            backToMenu();
+                        }
+                        break;
+                    }
                     // Steering is held, so it's read as keyboard state in the logic loop, not here.
                     // Assist keys only work while that assist has charge from a power-up.
                     const auto toggleIfCharged = [&](PowerUp p, auto&& toggle) {
@@ -396,7 +431,8 @@ int main(int /*argc*/, char* /*argv*/[]) {
                         }
                     };
                     if (key == SDLK_ESCAPE) {
-                        backToMenu();
+                        pause();
+                        audio.play(Sfx::MenuSelect);
                     } else if (key == SDLK_TAB) {
                         showSensorDebug = !showSensorDebug;
                     } else if (key == SDLK_a) {
@@ -427,8 +463,8 @@ int main(int /*argc*/, char* /*argv*/[]) {
 
         // Cap the backlog so a long stall (e.g. dragging the window) can't trigger hundreds of steps.
         accumulator = std::min(accumulator + frameTime, 0.25f);
-        if (screen == Screen::GameOver) {
-            accumulator = 0.0f;   // the world is frozen after a crash
+        if (screen == Screen::GameOver || paused) {
+            accumulator = 0.0f;   // the world is frozen after a crash or while paused
         }
 
         // --- Logic: zero or more fixed cycles per frame ---
@@ -619,7 +655,7 @@ int main(int /*argc*/, char* /*argv*/[]) {
             }
         }
 
-        audio.setEngine(screen == Screen::Playing, ego.speed() / kTopSpeed);
+        audio.setEngine(screen == Screen::Playing && !paused, ego.speed() / kTopSpeed);
 
         // --- HUD ---
         const float scroll = ego.position() * layout::kPixelsPerMeter;
@@ -854,6 +890,9 @@ int main(int /*argc*/, char* /*argv*/[]) {
             }
 
             gfx.drawPanel(hud);
+        }
+        if (paused) {
+            gfx.drawPause(pauseSelected);
         }
         if (screen == Screen::GameOver) {
             gfx.drawGameOver(lastScore, progress.best, newBest, coinsEarned, lastCrash.what, lastCrash.tip);
