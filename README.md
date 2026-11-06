@@ -75,6 +75,19 @@ cmake -B build-handheld -G Ninja -DHANDHELD=ON
 
 All targets compile with `-Wall -Wextra -Wpedantic -Werror`.
 
+### Packaging a release
+
+```sh
+cmake -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build-release
+cmake --build build-release --target package
+```
+
+This produces `LaneRunner-<version>-windows.zip` (or `-linux-<arch>.tar.gz`) in `build-release/`:
+the executable, the `assets/` it needs, and on Windows every DLL it depends on, so it runs on a
+PC without MSYS2. The Windows release build has no console window. Linux packages use the
+system's SDL2 and SDL2_image.
+
 ## Tests
 
 ```sh

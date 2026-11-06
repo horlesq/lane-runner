@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)   # oldest CMake version we support
-project(LaneRunner CXX)                # project name; CXX = C++ language
+project(LaneRunner VERSION 0.9.0 LANGUAGES CXX)   # project name and version; CXX = C++ language
 
 find_package(SDL2 REQUIRED)    # find the installed SDL2 library
 find_package(SDL2_image REQUIRED)
@@ -38,7 +38,49 @@ if(WIN32)
     set(APP_ICON_RC "${CMAKE_BINARY_DIR}/app_icon.rc")
     file(WRITE "${APP_ICON_RC}" "1 ICON \"${CMAKE_SOURCE_DIR}/assets/art/icon.ico\"\n")
     target_sources(lane-runner PRIVATE "${APP_ICON_RC}")
+
+    # Release builds are GUI apps (no console window); debug builds keep the console for error output.
+    if(CMAKE_BUILD_TYPE STREQUAL "Release")
+        set_target_properties(lane-runner PROPERTIES WIN32_EXECUTABLE ON)
+    endif()
 endif()
+
+# --- Packaging ---
+# Install layout: the executable with assets/ next to it (see findAssetDir in main.cpp).
+# The same layout is the R36S port folder (/roms/ports/lanerunner/).
+#   cmake -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release
+#   cmake --build build-release && cmake --build build-release --target package
+install(TARGETS lane-runner RUNTIME DESTINATION .)
+install(FILES assets/art/icon.png assets/art/menu-logo.png DESTINATION assets/art)
+install(DIRECTORY
+        assets/racing-pack/PNG/Cars
+        assets/racing-pack/PNG/Characters
+        assets/racing-pack/PNG/Motorcycles
+        assets/racing-pack/PNG/Objects
+    DESTINATION assets/racing-pack/PNG)
+install(FILES assets/racing-pack/License.txt DESTINATION assets/racing-pack)
+
+# Windows has no system SDL: copy every DLL the game needs from the toolchain next to it.
+# (RUNTIME_DEPENDENCIES needs CMake 3.21; MSYS2 ships a newer one.)
+if(WIN32)
+    get_filename_component(TOOLCHAIN_BIN "${CMAKE_CXX_COMPILER}" DIRECTORY)
+    install(TARGETS lane-runner
+        RUNTIME_DEPENDENCIES
+            DIRECTORIES "${TOOLCHAIN_BIN}"
+            PRE_EXCLUDE_REGEXES "^api-ms-" "^ext-ms-"
+            POST_EXCLUDE_REGEXES ".*[Ss]ystem32/.*\\.dll"
+        RUNTIME DESTINATION .)
+endif()
+
+if(WIN32)
+    set(CPACK_GENERATOR ZIP)
+    set(PACKAGE_PLATFORM windows)
+else()
+    set(CPACK_GENERATOR TGZ)
+    set(PACKAGE_PLATFORM linux-${CMAKE_SYSTEM_PROCESSOR})
+endif()
+set(CPACK_PACKAGE_FILE_NAME "LaneRunner-${PROJECT_VERSION}-${PACKAGE_PLATFORM}")
+include(CPack)
 
 # Cover art and icon generator. Not part of the normal build: run it after changing the art.
 #   cmake --build build --target artwork && ./build/artwork assets/ assets/art/

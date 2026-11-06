@@ -240,7 +240,7 @@ void Renderer2D::drawPanel(const HudView& hud) {
 
     font::drawText(r_, "SCORE", left, 44, 1, color::kLabel);
     if (hud.combo > 1) {
-        char comboText[16];
+        char comboText[24];
         std::snprintf(comboText, sizeof comboText, "COMBO X%d", hud.combo);
         font::drawText(r_, comboText, right - font::textWidth(comboText, 1), 44, 1, color::kTitle);
     }
@@ -253,7 +253,7 @@ void Renderer2D::drawPanel(const HudView& hud) {
 
     font::drawText(r_, "SPEED", left, 126, 1, color::kLabel);
     if (hud.shields > 0) {
-        char shieldText[16];
+        char shieldText[24];
         std::snprintf(shieldText, sizeof shieldText, "SHIELD X%d", hud.shields);
         font::drawText(r_, shieldText, right - font::textWidth(shieldText, 1), 126, 1, color::kActive);
     }
