@@ -59,8 +59,9 @@ cmake --build build
 ./build/lane-runner
 ```
 
-The asset directory is baked in at configure time (`ASSET_DIR`, pointing at `assets/` in the
-source tree).
+The game looks for `assets/` next to the executable first, so a packaged copy (executable plus
+`assets/` folder) runs from anywhere. If none is found it falls back to `assets/` in the source tree
+(`ASSET_DIR`, set at configure time), which is what a run from the build folder uses.
 
 ### Build options
 

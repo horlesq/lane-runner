@@ -36,8 +36,22 @@
 #include "world/PowerUps.hpp"
 #include "world/Wind.hpp"
 
-// ASSET_DIR is injected by CMake; wrap the macro in a typed constant once and use that.
-constexpr const char* kAssetDir = ASSET_DIR;
+// ASSET_DIR is injected by CMake: the source tree's assets/, used when running from the build folder.
+constexpr const char* kSourceAssetDir = ASSET_DIR;
+
+// A packaged game ships assets/ next to the executable; prefer that, so the binary works on any machine.
+std::string findAssetDir() {
+    std::string dir = kSourceAssetDir;
+    if (char* base = SDL_GetBasePath()) {
+        const std::string packaged = std::string(base) + "assets/";
+        SDL_free(base);
+        if (SDL_RWops* probe = SDL_RWFromFile((packaged + "art/icon.png").c_str(), "rb")) {
+            SDL_RWclose(probe);
+            dir = packaged;
+        }
+    }
+    return dir;
+}
 
 enum class Screen : std::uint8_t { Menu, Garage, Shop, Guide, Playing, GameOver };
 
@@ -89,8 +103,10 @@ int main(int /*argc*/, char* /*argv*/[]) {
         return 1;
     }
 
+    const std::string assetDir = findAssetDir();
+
     // Title-bar icon; the game still runs if the file is missing.
-    if (SDL_Surface* icon = IMG_Load((std::string(kAssetDir) + "art/icon.png").c_str())) {
+    if (SDL_Surface* icon = IMG_Load((assetDir + "art/icon.png").c_str())) {
         SDL_SetWindowIcon(window.get(), icon);
         SDL_FreeSurface(icon);
     }
@@ -105,8 +121,8 @@ int main(int /*argc*/, char* /*argv*/[]) {
     SDL_RenderSetLogicalSize(renderer.get(), cfg::kScreenWidth, cfg::kScreenHeight);
 
     Renderer2D gfx(renderer.get());
-    if (!gfx.loadAssets(kAssetDir)) {
-        std::cerr << "Asset error: " << SDL_GetError() << '\n';
+    if (!gfx.loadAssets(assetDir)) {
+        std::cerr << "Asset error (looked in " << assetDir << "): " << SDL_GetError() << '\n';
         return 1;
     }
 
