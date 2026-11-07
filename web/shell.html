@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lane Runner</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  /* 4:3 canvas, as large as fits; the game draws 640x480 and scales itself. */
+  #canvas {
+    position: absolute; inset: 0; margin: auto; display: block;
+    width: min(100vw, calc(100vh * 4 / 3)); height: min(100vh, calc(100vw * 3 / 4));
+    outline: none;
+  }
+  #overlay {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    color: #ffd23f; font: bold 24px monospace; letter-spacing: 2px; background: rgba(0, 0, 0, 0.6);
+    cursor: pointer; user-select: none;
+  }
+</style>
+</head>
+<body>
+<canvas id="canvas" tabindex="-1" oncontextmenu="event.preventDefault()"></canvas>
+<div id="overlay">LOADING...</div>
+<script>
+  const overlay = document.getElementById('overlay');
+  var Module = {
+    canvas: document.getElementById('canvas'),
+    // Called with download progress, and with '' once everything is loaded.
+    setStatus: (text) => {
+      if (overlay.dataset.ready) return;
+      if (text) {
+        overlay.textContent = 'LOADING...';
+        return;
+      }
+      overlay.dataset.ready = '1';
+      overlay.textContent = 'CLICK TO PLAY';
+    },
+  };
+  // The click gives the page keyboard focus (inside itch.io's frame) and lets the browser start audio.
+  overlay.addEventListener('click', () => {
+    if (!overlay.dataset.ready) return;
+    overlay.remove();
+    window.focus();
+    Module.canvas.focus();
+  });
+  // Keep arrow keys, space and Tab in the game instead of scrolling or moving focus.
+  window.addEventListener('keydown', (e) => {
+    if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', ' ', 'Tab'].includes(e.key)) e.preventDefault();
+  });
+</script>
+{{{ SCRIPT }}}
+</body>
+</html>

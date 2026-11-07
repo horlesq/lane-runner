@@ -10,13 +10,20 @@ struct MenuItemView {
 };
 
 struct MenuView {
-    std::array<MenuItemView, 6> items{{
+#ifdef __EMSCRIPTEN__
+    static constexpr std::size_t kItemCount = 5;   // a browser tab has no QUIT
+#else
+    static constexpr std::size_t kItemCount = 6;
+#endif
+    std::array<MenuItemView, kItemCount> items{{
         {"START", true},
         {"GARAGE", true},
         {"SHOP", true},
         {"HOW TO PLAY", true},
         {"ASSISTS", true},
+#ifndef __EMSCRIPTEN__
         {"QUIT", true},
+#endif
     }};
     std::size_t selected = 0;
     int best = 0;

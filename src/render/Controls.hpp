@@ -17,7 +17,11 @@ inline constexpr const char* kRetry = "A: RETRY";
 inline constexpr const char* kToMenu = "B: MENU";
 inline constexpr const char* kPaused = "UP/DOWN: CHOOSE   A: SELECT   B: RESUME";
 #else
+#ifdef __EMSCRIPTEN__
+inline constexpr const char* kMenu = "UP/DOWN: CHOOSE   ENTER: SELECT";   // no quitting a browser tab
+#else
 inline constexpr const char* kMenu = "UP/DOWN: CHOOSE   ENTER: SELECT   ESC: QUIT";
+#endif
 inline constexpr const char* kShop = "UP/DOWN: CHOOSE   ENTER: BUY   ESC: BACK";
 inline constexpr const char* kGarage = "LEFT/RIGHT: CHOOSE   ENTER: BUY OR DRIVE   ESC: BACK";
 inline constexpr const char* kGuide = "ENTER: DEBUG MODE   ESC: BACK";

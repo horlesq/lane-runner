@@ -88,6 +88,20 @@ the executable, the `assets/` it needs, and on Windows every DLL it depends on, 
 PC without MSYS2. The Windows release build has no console window. Linux packages use the
 system's SDL2 and SDL2_image.
 
+### Browser (WebAssembly)
+
+Requires the [Emscripten SDK](https://emscripten.org/docs/getting_started/downloads.html); its
+SDL2 and SDL2_image ports are downloaded on the first build.
+
+```sh
+emcmake cmake -B build-web -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build-web --target web-zip
+```
+
+This produces `build-web/LaneRunner-<version>-web.zip` (`index.html` plus `.js`, `.wasm` and
+`.data`), ready to upload as an HTML game. Progress is kept in the browser's IndexedDB. To try it
+locally, serve the folder (`python -m http.server` in `build-web/`) and open `index.html`.
+
 ## Tests
 
 ```sh

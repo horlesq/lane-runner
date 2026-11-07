@@ -1,8 +1,11 @@
 cmake_minimum_required(VERSION 3.16)   # oldest CMake version we support
 project(LaneRunner VERSION 0.9.0 LANGUAGES CXX)   # project name and version; CXX = C++ language
 
-find_package(SDL2 REQUIRED)    # find the installed SDL2 library
-find_package(SDL2_image REQUIRED)
+# The browser build (Emscripten) brings its own SDL2 ports; everything else uses the installed SDL2.
+if(NOT EMSCRIPTEN)
+    find_package(SDL2 REQUIRED)    # find the installed SDL2 library
+    find_package(SDL2_image REQUIRED)
+endif()
 
 set(CMAKE_CXX_STANDARD 17)             # use C++17
 set(CMAKE_CXX_STANDARD_REQUIRED ON)    # fail instead of silently using an older standard
@@ -18,7 +21,9 @@ add_executable(lane-runner             # a "target": the program we build
 # Treat every warning as an error, like embedded / safety-critical teams do.
 target_compile_options(lane-runner PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
-target_link_libraries(lane-runner PRIVATE SDL2::SDL2main SDL2::SDL2 SDL2_image::SDL2_image)   # linker step!
+if(NOT EMSCRIPTEN)
+    target_link_libraries(lane-runner PRIVATE SDL2::SDL2main SDL2::SDL2 SDL2_image::SDL2_image)   # linker step!
+endif()
 
 target_include_directories(lane-runner PRIVATE src)
 
@@ -30,6 +35,39 @@ target_compile_definitions(lane-runner PRIVATE ASSET_DIR="${CMAKE_SOURCE_DIR}/as
 option(HANDHELD "Show console button names (A, B, Y) instead of keyboard keys" OFF)
 if(HANDHELD)
     target_compile_definitions(lane-runner PRIVATE LANE_RUNNER_HANDHELD)
+endif()
+
+# --- Browser build (WebAssembly) ---
+# Needs the Emscripten SDK; produces index.html/.js/.wasm/.data and a zip for itch.io:
+#   emcmake cmake -B build-web -G Ninja -DCMAKE_BUILD_TYPE=Release
+#   cmake --build build-web --target web-zip
+if(EMSCRIPTEN)
+    set(WEB_SDL_FLAGS -sUSE_SDL=2 -sUSE_SDL_IMAGE=2 -sSDL2_IMAGE_FORMATS=png)
+    target_compile_options(lane-runner PRIVATE ${WEB_SDL_FLAGS})
+    target_link_options(lane-runner PRIVATE
+        ${WEB_SDL_FLAGS}
+        -sASYNCIFY                       # lets the normal main loop yield to the browser every frame
+        -sASYNCIFY_STACK_SIZE=65536
+        -sSTACK_SIZE=1MB
+        -sALLOW_MEMORY_GROWTH
+        -lidbfs.js                       # save file kept in the browser's IndexedDB
+        "SHELL:--shell-file ${CMAKE_SOURCE_DIR}/web/shell.html"
+        # Same asset set as the desktop package, at /assets/ in the virtual file system.
+        "SHELL:--preload-file ${CMAKE_SOURCE_DIR}/assets/art/icon.png@/assets/art/icon.png"
+        "SHELL:--preload-file ${CMAKE_SOURCE_DIR}/assets/racing-pack/PNG/Cars@/assets/racing-pack/PNG/Cars"
+        "SHELL:--preload-file ${CMAKE_SOURCE_DIR}/assets/racing-pack/PNG/Characters@/assets/racing-pack/PNG/Characters"
+        "SHELL:--preload-file ${CMAKE_SOURCE_DIR}/assets/racing-pack/PNG/Motorcycles@/assets/racing-pack/PNG/Motorcycles"
+        "SHELL:--preload-file ${CMAKE_SOURCE_DIR}/assets/racing-pack/PNG/Objects@/assets/racing-pack/PNG/Objects")
+    set_target_properties(lane-runner PROPERTIES OUTPUT_NAME index SUFFIX ".html"
+                          LINK_DEPENDS "${CMAKE_SOURCE_DIR}/web/shell.html")
+
+    # itch.io wants a zip with index.html at its root.
+    add_custom_target(web-zip
+        COMMAND ${CMAKE_COMMAND} -E tar cf "LaneRunner-${PROJECT_VERSION}-web.zip" --format=zip
+                index.html index.js index.wasm index.data
+        DEPENDS lane-runner
+        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}")
+    return()   # packaging, art tool and unit tests below are desktop-only
 endif()
 
 # Windows: embed the app icon in the .exe so Explorer and the taskbar show it.

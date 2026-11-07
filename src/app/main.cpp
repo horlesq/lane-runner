@@ -19,6 +19,7 @@
 #include "game/NearMiss.hpp"
 #include "game/Progress.hpp"
 #include "platform/SdlContext.hpp"
+#include "platform/Web.hpp"
 #include "platform/Window.hpp"
 #include "render/Layout.hpp"
 #include "render/Renderer2D.hpp"
@@ -62,7 +63,8 @@ constexpr std::size_t kMenuShop = 2;
 constexpr std::size_t kMenuHowToPlay = 3;
 constexpr std::size_t kMenuAssists = 4;
 constexpr std::size_t kMenuQuit = 5;
-static_assert(kMenuQuit < MenuView{}.items.size(), "Menu indices out of range");
+static_assert(kMenuAssists < MenuView{}.items.size(), "Menu indices out of range");
+static_assert(kIsWeb || kMenuQuit < MenuView{}.items.size(), "Menu indices out of range");   // no QUIT in a browser
 
 constexpr float kStartSpeed = 20.0f;   // m/s
 constexpr float kMenuSpeed = 22.0f;    // m/s, camera speed behind the title menu
@@ -97,8 +99,10 @@ int main(int /*argc*/, char* /*argv*/[]) {
 
     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1");   // smooth sprite scaling
 
+    // In a browser the page scales the canvas, so the window keeps its size.
+    const Uint32 windowFlags = kIsWeb ? 0u : static_cast<Uint32>(SDL_WINDOW_RESIZABLE);
     WindowPtr window(SDL_CreateWindow("Lane Runner", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-                                      layout::kWindowWidth, layout::kWindowHeight, SDL_WINDOW_RESIZABLE));
+                                      layout::kWindowWidth, layout::kWindowHeight, windowFlags));
     if (!window) {
         std::cerr << "SDL error: " << SDL_GetError() << '\n';
         return 1;
@@ -161,6 +165,7 @@ int main(int /*argc*/, char* /*argv*/[]) {
     MenuView menu;
     HudView hud;
     // Progress (best score, coins, upgrades) lives in a small file in the user's settings folder.
+    webMountSaveStorage();   // browser: load the stored save first (no-op elsewhere)
     std::string savePath = "lanerunner-save.txt";
     if (char* prefDir = SDL_GetPrefPath("LaneRunner", "LaneRunner")) {
         savePath = std::string(prefDir) + "save.txt";
@@ -168,6 +173,10 @@ int main(int /*argc*/, char* /*argv*/[]) {
     }
     Progress progress;
     progress.load(savePath);
+    const auto saveProgress = [&]() {
+        progress.save(savePath);
+        webPersistSaves();
+    };
     menu.best = progress.best;
     menu.coins = progress.coins;
     std::size_t shopSelected = 0;
@@ -370,7 +379,7 @@ int main(int /*argc*/, char* /*argv*/[]) {
                         } else if (menu.selected == kMenuQuit) {
                             running = false;
                         }
-                    } else if (key == SDLK_ESCAPE) {
+                    } else if (key == SDLK_ESCAPE && !kIsWeb) {   // a browser tab is closed by the browser
                         running = false;
                     }
                     break;
@@ -387,7 +396,7 @@ int main(int /*argc*/, char* /*argv*/[]) {
                         backToMenu();
                     } else if (confirm) {
                         if (progress.chooseCar(garageSelected)) {   // buys it if needed, then drives it
-                            progress.save(savePath);
+                            saveProgress();
                             audio.play(Sfx::MenuSelect);
                         } else {
                             audio.play(Sfx::Denied);
@@ -422,7 +431,7 @@ int main(int /*argc*/, char* /*argv*/[]) {
                         backToMenu();
                     } else if (confirm) {
                         if (progress.buy(static_cast<ShopItem>(shopSelected))) {
-                            progress.save(savePath);
+                            saveProgress();
                             audio.play(Sfx::MenuSelect);
                         } else {
                             audio.play(Sfx::Denied);   // maxed out or not enough coins
@@ -670,7 +679,7 @@ int main(int /*argc*/, char* /*argv*/[]) {
                 coinsEarned = 0;
                 if (!debugMode) {   // debug runs don't count
                     coinsEarned = progress.finishRun(lastScore);
-                    progress.save(savePath);
+                    saveProgress();
                 }
                 screen = Screen::GameOver;
                 accumulator = 0.0f;
@@ -924,6 +933,7 @@ int main(int /*argc*/, char* /*argv*/[]) {
         }
 
         SDL_RenderPresent(renderer.get());
+        webWaitForNextFrame();   // browser: yield until the next display refresh (no-op elsewhere)
     }
 
     return 0;
