@@ -618,6 +618,33 @@ static void testCutInWithoutBsw() {
     CHECK(!closeCall.crashed && closeCall.cutOffs > 0);
 }
 
+// A player who keeps their lane and only brakes gently is never blamed for a cut-off: cars appearing
+// behind them, or changing into their lane behind them, are not the player's doing. 20 runs of 30 s.
+static void testNoCutOffsForCarefulDriver() {
+    int cutOffs = 0;
+    for (std::uint32_t seed = 1; seed <= 20; ++seed) {
+        Vehicle ego(1, 20.0f);
+        Traffic traffic(seed);
+        for (int step = 0; step < 50 * 30; ++step) {
+            traffic.setActiveCount(Traffic::kMaxCars);
+            const std::optional<Lead> lead = findLead(ego, traffic.cars());
+            const bool slowerAhead = lead && lead->gap < 8.0f + 1.5f * ego.speed() && lead->relativeSpeed < 0.0f;
+            ego.setAcceleration(slowerAhead ? -2.0f : (ego.speed() < 20.0f ? 1.0f : 0.0f));
+            ego.step(0.02f);
+            traffic.step(0.02f, ego);
+            cutOffs += traffic.takeCutOffs();
+            bool crashed = false;
+            for (const Vehicle& car : traffic.cars()) {
+                crashed = crashed || collides(ego, car);
+            }
+            if (crashed) {
+                break;
+            }
+        }
+    }
+    CHECK(cutOffs == 0);
+}
+
 // With BSW: the same dangerous lane changes are blocked until the fast car has passed, so no crash.
 static void testBswPreventsRearEnd() {
     for (const float behind : {10.0f, 20.0f, 28.0f}) {
@@ -1058,6 +1085,7 @@ int main() {
     testLeadFromRadarMatchesGroundTruth();
     testBsw();
     testCutInWithoutBsw();
+    testNoCutOffsForCarefulDriver();
     testBswPreventsRearEnd();
     testMotorcycleHitbox();
     testCameraBlindInFog();

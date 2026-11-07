@@ -20,6 +20,7 @@ struct DriverState {
     float reactionTime = 1.0f;   // s before reacting when someone suddenly cuts in close
     float reactionLeft = 0.0f;   // s still to go before this driver notices
     bool followingPlayer = false;
+    bool cutInByPlayer = false;  // the player pulled in close in front of me (and I wasn't the one moving over)
     float accel = 0.0f;          // m/s^2 last cycle (brake lights; kept while not yet reacting)
     float honkCooldown = 0.0f;   // s before it can honk again
 };
@@ -154,6 +155,11 @@ private:
         const float comfortableGap = cars_[i].speed() * d.profile.timeHeadway;
         if (behindPlayer && !d.followingPlayer && leader->neighbour.gap < comfortableGap) {
             d.reactionLeft = d.reactionTime;   // the player appeared out of nowhere
+            // Only the player's fault if I wasn't changing lanes myself, into the player's path.
+            d.cutInByPlayer = !d.changingLane;
+        }
+        if (!behindPlayer || leader->neighbour.gap >= comfortableGap) {
+            d.cutInByPlayer = false;   // gone, or back at a comfortable distance: later braking isn't a cut-off
         }
         d.followingPlayer = behindPlayer;
 
@@ -162,8 +168,8 @@ private:
         if (d.reactionLeft > 0.0f) {
             d.reactionLeft -= dt;
             a = d.accel;   // hasn't reacted yet
-        } else if (behindPlayer && a < -kCutOffDecel && d.honkCooldown <= 0.0f) {
-            ++cutOffs_;    // forced to brake hard because of the player
+        } else if (d.cutInByPlayer && a < -kCutOffDecel && d.honkCooldown <= 0.0f) {
+            ++cutOffs_;    // forced to brake hard because the player cut in
             d.honkCooldown = kHonkCooldown;
         }
         return a;
@@ -392,9 +398,11 @@ private:
         }
         const float position = fromBehind ? ego.position() - std::uniform_real_distribution<float>(20.0f, 26.0f)(rng_)
                                           : ego.position() + std::uniform_real_distribution<float>(35.0f, 50.0f)(rng_);
-        // Most overtakers come up in a lane next to the player (the blind spot), the rest anywhere.
+        // Most overtakers come up in a lane next to the player (the blind spot), the rest in any other lane.
+        // Never right behind the player: appearing inside its following distance would make the new driver
+        // brake hard at once, which counts as a cut-off the player didn't cause.
         int lane = std::uniform_int_distribution<int>(0, cfg::kLaneCount - 1)(rng_);
-        if (fromBehind && std::bernoulli_distribution(0.7)(rng_)) {
+        if (fromBehind && (lane == ego.lane() || std::bernoulli_distribution(0.7)(rng_))) {
             const int side = std::bernoulli_distribution(0.5)(rng_) ? -1 : 1;
             lane = ego.lane() + side;
             if (lane < 0 || lane >= cfg::kLaneCount) {
@@ -425,6 +433,8 @@ private:
         }
         cars_[i].reset(lane, speed, position, variant, type);
         drivers_[i] = fresh;
+        // Appearing behind the player is not the player cutting in.
+        drivers_[i].followingPlayer = inLane(ego, lane) && position < ego.position();
     }
 
     static bool inLane(const Vehicle& v, int lane) {
