@@ -12,10 +12,14 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)    # fail instead of silently using an older
 set(CMAKE_CXX_EXTENSIONS OFF)          # -std=c++17, not -std=gnu++17 (portable code)
 
 add_executable(lane-runner             # a "target": the program we build
+    src/app/Game.cpp
     src/app/main.cpp
     src/audio/Audio.cpp
+    src/platform/Display.cpp
+    src/platform/Paths.cpp
     src/render/BitmapFont.cpp
     src/render/Renderer2D.cpp
+    src/render/Renderer2DScreens.cpp
 )
 
 # Treat every warning as an error, like embedded / safety-critical teams do.
@@ -27,7 +31,7 @@ endif()
 
 target_include_directories(lane-runner PRIVATE src)
 
-# Where the game finds its sprites when run from the build folder.
+# Where the game finds its sprites when run from the build folder (see platform/Paths.cpp).
 target_compile_definitions(lane-runner PRIVATE ASSET_DIR="${CMAKE_SOURCE_DIR}/assets/")
 
 # Handheld build (R36S): on-screen hints name the console buttons instead of keyboard keys.
@@ -42,6 +46,7 @@ endif()
 #   emcmake cmake -B build-web -G Ninja -DCMAKE_BUILD_TYPE=Release
 #   cmake --build build-web --target web-zip
 if(EMSCRIPTEN)
+    target_sources(lane-runner PRIVATE src/platform/Web.cpp)
     set(WEB_SDL_FLAGS -sUSE_SDL=2 -sUSE_SDL_IMAGE=2 -sSDL2_IMAGE_FORMATS=png)
     target_compile_options(lane-runner PRIVATE ${WEB_SDL_FLAGS})
     target_link_options(lane-runner PRIVATE
@@ -84,7 +89,7 @@ if(WIN32)
 endif()
 
 # --- Packaging ---
-# Install layout: the executable with assets/ next to it (see findAssetDir in main.cpp).
+# Install layout: the executable with assets/ next to it (see platform/Paths.cpp).
 # The same layout is the R36S port folder (/roms/ports/lanerunner/).
 #   cmake -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release
 #   cmake --build build-release && cmake --build build-release --target package

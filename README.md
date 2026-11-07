@@ -140,8 +140,8 @@ src/
   game/        Progress and shop, near-miss tracking, crash report
   render/      SDL renderer, bitmap font, HUD/menu view models, control hints
   audio/       Synthesised sound effects and engine hum
-  platform/    RAII wrappers for SDL init and window
-  app/         main loop: input, fixed-step update, drawing
+  platform/    SDL init, window and renderer (Display), asset and save paths, browser hooks
+  app/         Game (screens, input, fixed-step update, drawing); main.cpp: startup and the frame loop
 tests/         Unit tests (no SDL)
 tools/         Cover and icon generator (`artwork` target, not built by default)
 assets/        Sprites and generated art

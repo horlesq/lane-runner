@@ -1,36 +1,19 @@
 #pragma once
 
-// Browser build (Emscripten) hooks. On every other platform the functions are empty and compile away,
-// so desktop and handheld builds behave exactly as before.
-#ifdef __EMSCRIPTEN__
-#include <emscripten.h>
-#endif
-
+// Browser build (Emscripten) hooks, defined in Web.cpp. On every other platform the functions are
+// empty and compile away, so desktop and handheld builds behave exactly as before.
 #ifdef __EMSCRIPTEN__
 inline constexpr bool kIsWeb = true;
 
-// SDL keeps its preference path under /libsdl, which lives in memory in a browser. Back it with
-// IndexedDB and load what's stored there before the save file is read.
-EM_ASYNC_JS(void, webMountSaveStorage, (), {
-    FS.mkdir('/libsdl');
-    FS.mount(IDBFS, {}, '/libsdl');
-    await new Promise((resolve) => FS.syncfs(true, (err) => {
-        if (err) console.error('Loading saves failed:', err);
-        resolve();
-    }));
-});
-
-// Copy the in-memory files back to IndexedDB, after every save.
-EM_JS(void, webPersistSaves, (), {
-    FS.syncfs(false, (err) => {
-        if (err) console.error('Saving failed:', err);
-    });
-});
-
-// Hand control back to the browser until the next display refresh.
-EM_ASYNC_JS(void, webWaitForNextFrame, (), {
-    await new Promise((resolve) => requestAnimationFrame(resolve));
-});
+extern "C" {
+// SDL keeps its preference path under /libsdl, which lives in memory in a browser. Backs it with
+// IndexedDB and loads what's stored there; call before the save file is read.
+void webMountSaveStorage();
+// Copies the in-memory files back to IndexedDB; call after every save.
+void webPersistSaves();
+// Hands control back to the browser until the next display refresh.
+void webWaitForNextFrame();
+}
 #else
 inline constexpr bool kIsWeb = false;
 

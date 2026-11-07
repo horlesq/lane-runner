@@ -14,6 +14,25 @@
 // Pick-ups on the road. Driving through one charges an assist (or gives AEB one more save).
 enum class PowerUp : std::uint8_t { Acc, Lka, Bsw, Fusion, AebSave };
 
+// How a power-up is shown: the short tag on its road badge, the message when it is collected,
+// and the badge colour (plain RGB, so the world layer stays free of SDL).
+struct PowerUpLook {
+    const char* tag;
+    const char* collected;
+    std::uint8_t r, g, b;
+};
+
+constexpr PowerUpLook lookOf(PowerUp p) {
+    switch (p) {
+        case PowerUp::Acc:     return {"ACC", "+ CRUISE CONTROL", 46, 204, 113};
+        case PowerUp::Lka:     return {"LKA", "+ LANE KEEPING", 60, 170, 240};
+        case PowerUp::Bsw:     return {"BSW", "+ BLIND SPOT WARNING", 243, 156, 18};
+        case PowerUp::Fusion:  return {"FUS", "+ SENSOR FUSION", 170, 100, 230};
+        case PowerUp::AebSave: return {"AEB", "+ 1 AEB SAVE", 230, 70, 60};
+    }
+    return {"?", "", 255, 255, 255};
+}
+
 class PowerUpField {
 public:
     static constexpr std::size_t kMaxPickups = 3;
